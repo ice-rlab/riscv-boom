@@ -244,6 +244,10 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   //-------------------------------------------------------------
   // Uarch Hardware Performance Events (HPEs)
 
+  // TMA events
+  val uops_issued_events = Seq.tabulate(coreWidth)(x => ("uopsissued" + x, () => dec_fire(x)))
+  val fetch_bubble_events = Seq.tabulate(coreWidth)(x => ("fetchbubble" + x, () => dec_valids(x)))
+
   val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
     new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
       ("exception", () => rob.io.com_xcpt.valid),
@@ -260,14 +264,16 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
       ("flush",                             () => rob.io.flush.valid),
       ("branch resolved",                   () => b2.valid)
     )),
-
     new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
       ("I$ miss",     () => io.ifu.perf.acquire),
       ("D$ miss",     () => io.lsu.perf.acquire),
       ("D$ release",  () => io.lsu.perf.release),
       ("ITLB miss",   () => io.ifu.perf.tlbMiss),
       ("DTLB miss",   () => io.lsu.perf.tlbMiss),
-      ("L2 TLB miss", () => io.ptw.perf.l2miss)))))
+      ("L2 TLB miss", () => io.ptw.perf.l2miss))),
+    new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR,
+      uops_issued_events ++ fetch_bubble_events
+    )))
   val csr = Module(new freechips.rocketchip.rocket.CSRFile(perfEvents, boomParams.customCSRs.decls))
   csr.io.inst foreach { c => c := DontCare }
   csr.io.rocc_interrupt := io.rocc.interrupt
