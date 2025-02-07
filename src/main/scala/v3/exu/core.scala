@@ -246,7 +246,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
   // TMA events
   val uops_issued_events = Seq.tabulate(coreWidth)(x => ("uopsissued" + x, () => dec_fire(x)))
-  val fetch_bubble_events = Seq.tabulate(coreWidth)(x => ("fetchbubble" + x, () => dec_valids(x)))
+  val fetch_bubble_events = Seq.tabulate(coreWidth)(x => ("fetchbubble" + x, () => io.ifu.fetchpacket.valid && dec_fbundle.uops(x).valid))
 
   val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
     new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
@@ -355,7 +355,8 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
         "Load/Store Unit Size  : " + numLdqEntries + "/" + numStqEntries,
         "Num Int Phys Registers: " + numIntPhysRegs,
         "Num FP  Phys Registers: " + numFpPhysRegs,
-        "Max Branch Count      : " + maxBrCount)
+        "Max Branch Count      : " + maxBrCount, 
+        "Num PerfCounters      : " + nPerfCounters)
     + iregfile.toString + "\n"
     + BoomCoreStringPrefix(
         "Num Slow Wakeup Ports : " + numIrfWritePorts,
