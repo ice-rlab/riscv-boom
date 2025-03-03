@@ -82,7 +82,7 @@ class WithRationalBoomTiles extends Config((site, here, up) => {
 /**
  * 1-wide BOOM.
  */
-class WithNSmallBooms(n: Int = 1) extends Config(
+class WithNSmallBooms(n: Int = 1, configSuperscalarCounterMode: Int = SuperscalarCSRMode.SCALAR_COUNTERS) extends Config(
   new WithTAGELBPD ++ // Default to TAGE-L BPD
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
@@ -107,6 +107,7 @@ class WithNSmallBooms(n: Int = 1) extends Config(
               numFetchBufferEntries = 8,
               ftq = FtqParameters(nEntries=16),
               nPerfCounters = 29,
+              superscalarCounterMode = configSuperscalarCounterMode,
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),
             dcache = Some(
@@ -128,7 +129,7 @@ class WithNSmallBooms(n: Int = 1) extends Config(
 /**
  * 2-wide BOOM.
  */
-class WithNMediumBooms(n: Int = 1) extends Config(
+class WithNMediumBooms(n: Int = 1, configSuperscalarCounterMode: Int = SuperscalarCSRMode.SCALAR_COUNTERS) extends Config(
   new WithTAGELBPD ++ // Default to TAGE-L BPD
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
@@ -153,6 +154,7 @@ class WithNMediumBooms(n: Int = 1) extends Config(
               numFetchBufferEntries = 16,
               ftq = FtqParameters(nEntries=32),
               nPerfCounters = 29,
+              superscalarCounterMode = configSuperscalarCounterMode,
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),
             dcache = Some(
@@ -174,7 +176,7 @@ class WithNMediumBooms(n: Int = 1) extends Config(
 /**
  * 3-wide BOOM. Try to match the Cortex-A15.
  */
-class WithNLargeBooms(n: Int = 1) extends Config(
+class WithNLargeBooms(n: Int = 1, configSuperscalarCounterMode: Int = SuperscalarCSRMode.SCALAR_COUNTERS) extends Config(
   new WithTAGELBPD ++ // Default to TAGE-L BPD
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
@@ -220,7 +222,7 @@ class WithNLargeBooms(n: Int = 1) extends Config(
 /**
  * 4-wide BOOM.
  */
-class WithNMegaBooms(n: Int = 1) extends Config(
+class WithNMegaBooms(n: Int = 1, configSuperscalarCounterMode: Int = SuperscalarCSRMode.SCALAR_COUNTERS) extends Config(
   new WithTAGELBPD ++ // Default to TAGE-L BPD
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
@@ -245,6 +247,7 @@ class WithNMegaBooms(n: Int = 1) extends Config(
               numFetchBufferEntries = 32,
               enablePrefetching = true,
               nPerfCounters = 29,
+              superscalarCounterMode = configSuperscalarCounterMode,
               ftq = FtqParameters(nEntries=40),
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),

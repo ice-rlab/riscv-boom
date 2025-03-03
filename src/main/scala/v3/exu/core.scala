@@ -242,39 +242,138 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   }
 
   //-------------------------------------------------------------
+  // Pull out instructions and send to the Decoders
+  // Moved up here because dec_fbundle used in perfEvents
+
+  io.ifu.fetchpacket.ready := dec_ready
+  val dec_fbundle = io.ifu.fetchpacket.bits
+
+  //-------------------------------------------------------------
   // Uarch Hardware Performance Events (HPEs)
 
-  // TMA events
-  val uops_issued_events = Seq.tabulate(coreWidth)(x => ("uopsissued" + x, () => dec_fire(x)))
-  val fetch_bubble_events = Seq.tabulate(coreWidth)(x => ("fetchbubble" + x, () => io.ifu.fetchpacket.valid && dec_fbundle.uops(x).valid))
+  val perfEvents = boomParams.superscalarCounterMode match {
+    case SuperscalarCSRMode.NONE =>
+      new freechips.rocketchip.rocket.EventSets(Seq(
+        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+          ("exception", () => rob.io.com_xcpt.valid),
+          ("nop",       () => false.B),
+          ("nop",       () => false.B),
+          ("nop",       () => false.B))),
 
-  val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
-    new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-      ("exception", () => rob.io.com_xcpt.valid),
-      ("nop",       () => false.B),
-      ("nop",       () => false.B),
-      ("nop",       () => false.B))),
+        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+    //      ("I$ blocked",                        () => icache_blocked),
+          ("nop",                               () => false.B),
+          // ("branch misprediction",              () => br_unit.brinfo.mispredict),
+          // ("control-flow target misprediction", () => br_unit.brinfo.mispredict &&
+          //                                             br_unit.brinfo.cfi_type === CFI_JALR),
+          ("flush",                             () => rob.io.flush.valid)
+          //("branch resolved",                   () => br_unit.brinfo.valid)
+        )),
+        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+          ("I$ miss",     () => io.ifu.perf.acquire),
+          ("D$ miss",     () => io.lsu.perf.acquire),
+          ("D$ release",  () => io.lsu.perf.release),
+          ("ITLB miss",   () => io.ifu.perf.tlbMiss),
+          ("DTLB miss",   () => io.lsu.perf.tlbMiss),
+          ("L2 TLB miss", () => io.ptw.perf.l2miss)
+        ))
+      ))
+    case SuperscalarCSRMode.SCALAR_COUNTERS =>
+      new freechips.rocketchip.rocket.EventSets(Seq(
+        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+          ("exception", () => rob.io.com_xcpt.valid),
+          ("nop",       () => false.B),
+          ("nop",       () => false.B),
+          ("nop",       () => false.B))),
 
-    new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-//      ("I$ blocked",                        () => icache_blocked),
-      ("nop",                               () => false.B),
-      ("branch misprediction",              () => b2.mispredict),
-      ("control-flow target misprediction", () => b2.mispredict &&
-                                                  b2.cfi_type === CFI_JALR),
-      ("flush",                             () => rob.io.flush.valid),
-      ("branch resolved",                   () => b2.valid)
-    )),
-    new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-      ("I$ miss",     () => io.ifu.perf.acquire),
-      ("D$ miss",     () => io.lsu.perf.acquire),
-      ("D$ release",  () => io.lsu.perf.release),
-      ("ITLB miss",   () => io.ifu.perf.tlbMiss),
-      ("DTLB miss",   () => io.lsu.perf.tlbMiss),
-      ("L2 TLB miss", () => io.ptw.perf.l2miss))),
-    new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR,
-      uops_issued_events ++ fetch_bubble_events
-    )))
-  val csr = Module(new freechips.rocketchip.rocket.CSRFile(perfEvents, boomParams.customCSRs.decls))
+        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+    //      ("I$ blocked",                        () => icache_blocked),
+          ("nop",                               () => false.B),
+          // ("branch misprediction",              () => br_unit.brinfo.mispredict),
+          // ("control-flow target misprediction", () => br_unit.brinfo.mispredict &&
+          //                                             br_unit.brinfo.cfi_type === CFI_JALR),
+          ("flush",                             () => rob.io.flush.valid)
+          //("branch resolved",                   () => br_unit.brinfo.valid)
+        )),
+        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+          ("I$ miss",     () => io.ifu.perf.acquire),
+          ("D$ miss",     () => io.lsu.perf.acquire),
+          ("D$ release",  () => io.lsu.perf.release),
+          ("ITLB miss",   () => io.ifu.perf.tlbMiss),
+          ("DTLB miss",   () => io.lsu.perf.tlbMiss),
+          ("L2 TLB miss", () => io.ptw.perf.l2miss)
+        )),
+        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR,
+          Seq.tabulate(coreWidth)(x => ("uopsissued" + x, () => dec_fire(x)))
+          ++ Seq.tabulate(coreWidth)(x => ("fetchbubble" + x, () => io.ifu.fetchpacket.valid && dec_fbundle.uops(x).valid))
+        )
+      ))
+    case SuperscalarCSRMode.ADD_WIRES =>
+      new freechips.rocketchip.rocket.SuperscalarEventSets(Seq(
+        (
+          Seq(new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+            ("exception", () => rob.io.com_xcpt.valid),
+            ("nop",       () => false.B),
+            ("nop",       () => false.B),
+            ("nop",       () => false.B)
+          ))),
+          (a, b) => a + b
+        ),
+        (
+          Seq(new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+            // ("I$ blocked",                        () => icache_blocked),
+            ("nop",                               () => false.B),
+            // ("branch misprediction",              () => br_unit.brinfo.mispredict),
+            // ("control-flow target misprediction", () => br_unit.brinfo.mispredict &&
+            //                                             br_unit.brinfo.cfi_type === CFI_JALR),
+            ("flush",                             () => rob.io.flush.valid)
+            //("branch resolved",                   () => br_unit.brinfo.valid)
+          ))),
+          (a, b) => a + b
+        ),
+        (
+          Seq(new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+            ("I$ miss",     () => io.ifu.perf.acquire),
+            ("D$ miss",     () => io.lsu.perf.acquire),
+            ("D$ release",  () => io.lsu.perf.release),
+            ("ITLB miss",   () => io.ifu.perf.tlbMiss),
+            ("DTLB miss",   () => io.lsu.perf.tlbMiss),
+            ("L2 TLB miss", () => io.ptw.perf.l2miss)
+          ))),
+          (a, b) => a + b
+        ),
+        (
+          Seq.tabulate(coreWidth)(x => // for each core
+            new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+              ("uopsissued", () => dec_fire(x)),
+              ("fetchbubble", () => io.ifu.fetchpacket.valid && dec_fbundle.uops(x).valid)
+            ))
+          ),
+          (a, b) => { // accumulate sum of event signals in a cycle
+            val a2 = Wire(UInt(log2Ceil(1+coreWidth).W))
+            val b2 = Wire(UInt(log2Ceil(1+coreWidth).W))
+            a2 := a
+            b2 := b
+            a2 + b2
+          }
+        )
+      ))
+    case SuperscalarCSRMode.DISTRIBUTED_COUNTERS =>
+      null
+    case _ => null
+  }
+
+  val csr = boomParams.superscalarCounterMode match {
+    case SuperscalarCSRMode.NONE =>
+      Module(new freechips.rocketchip.rocket.CSRFile(perfEvents.asInstanceOf[freechips.rocketchip.rocket.EventSets], boomParams.customCSRs.decls))
+    case SuperscalarCSRMode.SCALAR_COUNTERS =>
+      Module(new freechips.rocketchip.rocket.CSRFile(perfEvents.asInstanceOf[freechips.rocketchip.rocket.EventSets], boomParams.customCSRs.decls))
+    case SuperscalarCSRMode.ADD_WIRES =>
+      Module(new freechips.rocketchip.rocket.SuperscalarCSRFile(perfEvents.asInstanceOf[freechips.rocketchip.rocket.SuperscalarEventSets], boomParams.customCSRs.decls))
+    case SuperscalarCSRMode.DISTRIBUTED_COUNTERS =>
+      null
+    case _ => null
+  }
   csr.io.inst foreach { c => c := DontCare }
   csr.io.rocc_interrupt := io.rocc.interrupt
   csr.io.mhtinst_read_pseudo := false.B
@@ -286,7 +385,16 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
   //val icache_blocked = !(io.ifu.fetchpacket.valid || RegNext(io.ifu.fetchpacket.valid))
   val icache_blocked = false.B
-  csr.io.counters foreach { c => c.inc := RegNext(perfEvents.evaluate(c.eventSel)) }
+  csr.io.counters foreach { c => c.inc := RegNext(boomParams.superscalarCounterMode match {
+      case SuperscalarCSRMode.NONE =>
+        perfEvents.asInstanceOf[freechips.rocketchip.rocket.EventSets].evaluate(c.eventSel)
+      case SuperscalarCSRMode.SCALAR_COUNTERS =>
+        perfEvents.asInstanceOf[freechips.rocketchip.rocket.EventSets].evaluate(c.eventSel)
+      case SuperscalarCSRMode.ADD_WIRES =>
+        perfEvents.asInstanceOf[freechips.rocketchip.rocket.SuperscalarEventSets].evaluate(c.eventSel)
+      case _ => null
+    })
+  }
 
   //****************************************
   // Time Stamp Counter & Retired Instruction Counter
@@ -355,7 +463,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
         "Load/Store Unit Size  : " + numLdqEntries + "/" + numStqEntries,
         "Num Int Phys Registers: " + numIntPhysRegs,
         "Num FP  Phys Registers: " + numFpPhysRegs,
-        "Max Branch Count      : " + maxBrCount, 
+        "Max Branch Count      : " + maxBrCount,
         "Num PerfCounters      : " + nPerfCounters)
     + iregfile.toString + "\n"
     + BoomCoreStringPrefix(
@@ -504,9 +612,10 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
   //-------------------------------------------------------------
   // Pull out instructions and send to the Decoders
+  // Moved up to performance event definitions
 
-  io.ifu.fetchpacket.ready := dec_ready
-  val dec_fbundle = io.ifu.fetchpacket.bits
+  //io.ifu.fetchpacket.ready := dec_ready
+  //val dec_fbundle = io.ifu.fetchpacket.bits
 
   //-------------------------------------------------------------
   // Decoders

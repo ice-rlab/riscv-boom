@@ -19,6 +19,14 @@ import boom.v3.ifu._
 import boom.v3.exu._
 import boom.v3.lsu._
 
+/* Superscalar aggregation mode */
+object SuperscalarCSRMode {
+  val NONE = 0
+  val SCALAR_COUNTERS = 1
+  val ADD_WIRES = 2
+  val DISTRIBUTED_COUNTERS = 3
+}
+
 /**
  * Default BOOM core parameters
  */
@@ -98,6 +106,9 @@ case class BoomCoreParams(
   mcontextWidth: Int = 0,
   scontextWidth: Int = 0,
   trace: Boolean = false,
+
+  /* performance counter architecture */
+  superscalarCounterMode: Int = SuperscalarCSRMode.SCALAR_COUNTERS,
 
   /* debug stuff */
   enableCommitLogPrintf: Boolean = false,
@@ -266,6 +277,11 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val enableSFBOpt = boomParams.enableSFBOpt
   val enableGHistStallRepair = boomParams.enableGHistStallRepair
   val enableBTBFastRepair = boomParams.enableBTBFastRepair
+
+  require(boomParams.superscalarCounterMode == SuperscalarCSRMode.NONE ||
+    boomParams.superscalarCounterMode == SuperscalarCSRMode.SCALAR_COUNTERS ||
+    boomParams.superscalarCounterMode == SuperscalarCSRMode.ADD_WIRES ||
+    boomParams.superscalarCounterMode == SuperscalarCSRMode.DISTRIBUTED_COUNTERS)
 
   //************************************
   // Implicitly calculated constants
