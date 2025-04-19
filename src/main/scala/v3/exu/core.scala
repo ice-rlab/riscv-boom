@@ -251,6 +251,48 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   //-------------------------------------------------------------
   // Uarch Hardware Performance Events (HPEs)
 
+  val uopsissued_masked = if (boomParams.superscalarCounterMode == SuperscalarCSRMode.DISTRIBUTED_COUNTERS) Wire(Bool()) else null;
+  val fetchbubble_masked = if (boomParams.superscalarCounterMode == SuperscalarCSRMode.DISTRIBUTED_COUNTERS) Wire(Bool()) else null;
+  val numCoreCounters = 2
+  val coreCtrWidth = log2Up(coreWidth)
+
+  // distributed counter
+  if (boomParams.superscalarCounterMode == SuperscalarCSRMode.DISTRIBUTED_COUNTERS) {
+    //("uopsissued", () => dec_fire(x))
+    //("fetchbubble", () => io.ifu.fetchpacket.valid && dec_fbundle.uops(x).valid))
+
+    // freechips.rocketchip.util.WideCounter(width: Int, inc: UInt = 1.U, reset: Boolean = true, inhibit: Bool = false.B)
+    // val reg_instret = WideCounter(64, io.retire, inhibit = reg_mcountinhibit(2))
+
+    // barrel shifter for acknowledge signal
+    val core_counter_ack = Reg(UInt(coreWidth.W))
+    when (reset.asBool) {
+      core_counter_ack := 1.U(coreWidth.W)
+    } .otherwise {
+      core_counter_ack := Cat(core_counter_ack(coreWidth-2, 0), core_counter_ack(coreWidth-1))
+    }
+
+    // vectors holding masked event signals for each core
+    val uopsissued_masked_vec = Reg(Vec(coreWidth, Bool()))
+    val fetchbubble_masked_vec = Reg(Vec(coreWidth, Bool()))
+
+    for (w <- 0 until coreWidth) {
+      // event is core_counter_ack(w) & overflow(w)
+
+      // ("uopsissued", () => dec_fire(x))
+      val uopsissued_ctr = freechips.rocketchip.util.WideCounterOverflow(coreCtrWidth, dec_fire(w), false, false.B, core_counter_ack(w))
+      uopsissued_masked_vec(w) := uopsissued_ctr.overflow & core_counter_ack(w)
+
+      // ("fetchbubble", () => io.ifu.fetchpacket.valid && dec_fbundle.uops(x).valid))
+      val fetchbubble_ctr = freechips.rocketchip.util.WideCounterOverflow(coreCtrWidth, dec_fbundle.uops(w).valid, false, false.B, core_counter_ack(w))
+      fetchbubble_masked_vec(w) := fetchbubble_ctr.overflow & core_counter_ack(w)
+    }
+
+    // perform or reduction to get event from any pipeline
+    uopsissued_masked := Cat(uopsissued_masked_vec).orR
+    fetchbubble_masked := Cat(fetchbubble_masked_vec).orR
+  }
+
   val perfEvents = boomParams.superscalarCounterMode match {
     case SuperscalarCSRMode.NONE =>
       new freechips.rocketchip.rocket.EventSets(Seq(
@@ -359,7 +401,35 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
         )
       ))
     case SuperscalarCSRMode.DISTRIBUTED_COUNTERS =>
-      null
+      new freechips.rocketchip.rocket.EventSets(Seq(
+        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+          ("exception", () => rob.io.com_xcpt.valid),
+          ("nop",       () => false.B),
+          ("nop",       () => false.B),
+          ("nop",       () => false.B))),
+
+        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+    //      ("I$ blocked",                        () => icache_blocked),
+          ("nop",                               () => false.B),
+          // ("branch misprediction",              () => br_unit.brinfo.mispredict),
+          // ("control-flow target misprediction", () => br_unit.brinfo.mispredict &&
+          //                                             br_unit.brinfo.cfi_type === CFI_JALR),
+          ("flush",                             () => rob.io.flush.valid)
+          //("branch resolved",                   () => br_unit.brinfo.valid)
+        )),
+        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+          ("I$ miss",     () => io.ifu.perf.acquire),
+          ("D$ miss",     () => io.lsu.perf.acquire),
+          ("D$ release",  () => io.lsu.perf.release),
+          ("ITLB miss",   () => io.ifu.perf.tlbMiss),
+          ("DTLB miss",   () => io.lsu.perf.tlbMiss),
+          ("L2 TLB miss", () => io.ptw.perf.l2miss)
+        )),
+        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+          ("uopsissued", () => uopsissued_masked),
+          ("fetchbubble", () => fetchbubble_masked)
+        ))
+      ))
     case _ => null
   }
 
@@ -371,7 +441,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     case SuperscalarCSRMode.ADD_WIRES =>
       Module(new freechips.rocketchip.rocket.SuperscalarCSRFile(perfEvents.asInstanceOf[freechips.rocketchip.rocket.SuperscalarEventSets], boomParams.customCSRs.decls))
     case SuperscalarCSRMode.DISTRIBUTED_COUNTERS =>
-      null
+      Module(new freechips.rocketchip.rocket.CSRFile(perfEvents.asInstanceOf[freechips.rocketchip.rocket.EventSets], boomParams.customCSRs.decls))
     case _ => null
   }
   csr.io.inst foreach { c => c := DontCare }
@@ -392,6 +462,8 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
         perfEvents.asInstanceOf[freechips.rocketchip.rocket.EventSets].evaluate(c.eventSel)
       case SuperscalarCSRMode.ADD_WIRES =>
         perfEvents.asInstanceOf[freechips.rocketchip.rocket.SuperscalarEventSets].evaluate(c.eventSel)
+      case SuperscalarCSRMode.DISTRIBUTED_COUNTERS =>
+        perfEvents.asInstanceOf[freechips.rocketchip.rocket.EventSets].evaluate(c.eventSel)
       case _ => null
     })
   }
