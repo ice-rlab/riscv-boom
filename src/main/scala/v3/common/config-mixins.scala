@@ -199,6 +199,8 @@ class WithNLargeBooms(n: Int = 1, configSuperscalarCounterMode: Int = Superscala
               numStqEntries = 24,
               maxBrCount = 16,
               numFetchBufferEntries = 24,
+              nPerfCounters = 29,
+              superscalarCounterMode = configSuperscalarCounterMode,
               ftq = FtqParameters(nEntries=32),
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),
