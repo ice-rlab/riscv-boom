@@ -254,7 +254,8 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   val uopsissued_masked = if (boomParams.superscalarCounterMode == SuperscalarCSRMode.DISTRIBUTED_COUNTERS) Wire(Bool()) else null;
   val fetchbubble_masked = if (boomParams.superscalarCounterMode == SuperscalarCSRMode.DISTRIBUTED_COUNTERS) Wire(Bool()) else null;
   val numCoreCounters = 2
-  val coreCtrWidth = log2Up(coreWidth)
+  //val coreCtrWidth = log2Up(coreWidth)
+  val coreCtrWidth = if (coreWidth == 1) 1 else log2Up(coreWidth)
 
   // distributed counter
   if (boomParams.superscalarCounterMode == SuperscalarCSRMode.DISTRIBUTED_COUNTERS) {
