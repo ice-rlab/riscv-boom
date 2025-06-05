@@ -254,17 +254,10 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   val uopsissued_masked = if (boomParams.superscalarCounterMode == SuperscalarCSRMode.DISTRIBUTED_COUNTERS) Wire(Bool()) else null;
   val fetchbubble_masked = if (boomParams.superscalarCounterMode == SuperscalarCSRMode.DISTRIBUTED_COUNTERS) Wire(Bool()) else null;
   val numCoreCounters = 2
-  //val coreCtrWidth = log2Up(coreWidth)
   val coreCtrWidth = if (coreWidth == 1) 1 else log2Up(coreWidth)
 
   // distributed counter
   if (boomParams.superscalarCounterMode == SuperscalarCSRMode.DISTRIBUTED_COUNTERS) {
-    //("uopsissued", () => dec_fire(x))
-    //("fetchbubble", () => io.ifu.fetchpacket.valid && dec_fbundle.uops(x).valid))
-
-    // freechips.rocketchip.util.WideCounter(width: Int, inc: UInt = 1.U, reset: Boolean = true, inhibit: Bool = false.B)
-    // val reg_instret = WideCounter(64, io.retire, inhibit = reg_mcountinhibit(2))
-
     // barrel shifter for acknowledge signal
     val core_counter_ack = Reg(UInt(coreWidth.W))
     when (reset.asBool) {
@@ -298,56 +291,20 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     case SuperscalarCSRMode.NONE =>
       new freechips.rocketchip.rocket.EventSets(Seq(
         new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-          ("exception", () => rob.io.com_xcpt.valid),
-          ("nop",       () => false.B),
-          ("nop",       () => false.B),
-          ("nop",       () => false.B))),
-
-        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-    //      ("I$ blocked",                        () => icache_blocked),
-          ("nop",                               () => false.B),
-          // ("branch misprediction",              () => br_unit.brinfo.mispredict),
-          // ("control-flow target misprediction", () => br_unit.brinfo.mispredict &&
-          //                                             br_unit.brinfo.cfi_type === CFI_JALR),
-          ("flush",                             () => rob.io.flush.valid)
-          //("branch resolved",                   () => br_unit.brinfo.valid)
+          ("exception", () => rob.io.com_xcpt.valid)
         )),
         new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-          ("I$ miss",     () => io.ifu.perf.acquire),
-          ("D$ miss",     () => io.lsu.perf.acquire),
-          ("D$ release",  () => io.lsu.perf.release),
-          ("ITLB miss",   () => io.ifu.perf.tlbMiss),
-          ("DTLB miss",   () => io.lsu.perf.tlbMiss),
-          ("L2 TLB miss", () => io.ptw.perf.l2miss)
+          ("exception", () => rob.io.com_xcpt.valid)
         ))
       ))
     case SuperscalarCSRMode.SCALAR_COUNTERS =>
       new freechips.rocketchip.rocket.EventSets(Seq(
         new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-          ("exception", () => rob.io.com_xcpt.valid),
-          ("nop",       () => false.B),
-          ("nop",       () => false.B),
-          ("nop",       () => false.B))),
-
-        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-    //      ("I$ blocked",                        () => icache_blocked),
-          ("nop",                               () => false.B),
-          // ("branch misprediction",              () => br_unit.brinfo.mispredict),
-          // ("control-flow target misprediction", () => br_unit.brinfo.mispredict &&
-          //                                             br_unit.brinfo.cfi_type === CFI_JALR),
-          ("flush",                             () => rob.io.flush.valid)
-          //("branch resolved",                   () => br_unit.brinfo.valid)
-        )),
-        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-          ("I$ miss",     () => io.ifu.perf.acquire),
-          ("D$ miss",     () => io.lsu.perf.acquire),
-          ("D$ release",  () => io.lsu.perf.release),
-          ("ITLB miss",   () => io.ifu.perf.tlbMiss),
-          ("DTLB miss",   () => io.lsu.perf.tlbMiss),
-          ("L2 TLB miss", () => io.ptw.perf.l2miss)
+          ("exception", () => rob.io.com_xcpt.valid)
         )),
         new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR,
-          Seq.tabulate(coreWidth)(x => ("uopsissued" + x, () => dec_fire(x)))
+          Seq.tabulate(1)(x => ("exception", () => rob.io.com_xcpt.valid))
+          ++ Seq.tabulate(coreWidth)(x => ("uopsissued" + x, () => dec_fire(x)))
           ++ Seq.tabulate(coreWidth)(x => ("fetchbubble" + x, () => io.ifu.fetchpacket.valid && dec_fbundle.uops(x).valid))
         )
       ))
@@ -355,33 +312,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
       new freechips.rocketchip.rocket.SuperscalarEventSets(Seq(
         (
           Seq(new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-            ("exception", () => rob.io.com_xcpt.valid),
-            ("nop",       () => false.B),
-            ("nop",       () => false.B),
-            ("nop",       () => false.B)
-          ))),
-          (a, b) => a + b
-        ),
-        (
-          Seq(new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-            // ("I$ blocked",                        () => icache_blocked),
-            ("nop",                               () => false.B),
-            // ("branch misprediction",              () => br_unit.brinfo.mispredict),
-            // ("control-flow target misprediction", () => br_unit.brinfo.mispredict &&
-            //                                             br_unit.brinfo.cfi_type === CFI_JALR),
-            ("flush",                             () => rob.io.flush.valid)
-            //("branch resolved",                   () => br_unit.brinfo.valid)
-          ))),
-          (a, b) => a + b
-        ),
-        (
-          Seq(new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-            ("I$ miss",     () => io.ifu.perf.acquire),
-            ("D$ miss",     () => io.lsu.perf.acquire),
-            ("D$ release",  () => io.lsu.perf.release),
-            ("ITLB miss",   () => io.ifu.perf.tlbMiss),
-            ("DTLB miss",   () => io.lsu.perf.tlbMiss),
-            ("L2 TLB miss", () => io.ptw.perf.l2miss)
+            ("exception", () => rob.io.com_xcpt.valid)
           ))),
           (a, b) => a + b
         ),
@@ -404,29 +335,10 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     case SuperscalarCSRMode.DISTRIBUTED_COUNTERS =>
       new freechips.rocketchip.rocket.EventSets(Seq(
         new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+          ("exception", () => rob.io.com_xcpt.valid)
+        )),
+        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
           ("exception", () => rob.io.com_xcpt.valid),
-          ("nop",       () => false.B),
-          ("nop",       () => false.B),
-          ("nop",       () => false.B))),
-
-        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-    //      ("I$ blocked",                        () => icache_blocked),
-          ("nop",                               () => false.B),
-          // ("branch misprediction",              () => br_unit.brinfo.mispredict),
-          // ("control-flow target misprediction", () => br_unit.brinfo.mispredict &&
-          //                                             br_unit.brinfo.cfi_type === CFI_JALR),
-          ("flush",                             () => rob.io.flush.valid)
-          //("branch resolved",                   () => br_unit.brinfo.valid)
-        )),
-        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-          ("I$ miss",     () => io.ifu.perf.acquire),
-          ("D$ miss",     () => io.lsu.perf.acquire),
-          ("D$ release",  () => io.lsu.perf.release),
-          ("ITLB miss",   () => io.ifu.perf.tlbMiss),
-          ("DTLB miss",   () => io.lsu.perf.tlbMiss),
-          ("L2 TLB miss", () => io.ptw.perf.l2miss)
-        )),
-        new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
           ("uopsissued", () => uopsissued_masked),
           ("fetchbubble", () => fetchbubble_masked)
         ))
