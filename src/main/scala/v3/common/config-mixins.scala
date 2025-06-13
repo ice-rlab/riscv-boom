@@ -176,7 +176,7 @@ class WithNMediumBooms(n: Int = 1, configSuperscalarCounterMode: Int = Superscal
 /**
  * 3-wide BOOM. Try to match the Cortex-A15.
  */
-class WithNLargeBooms(n: Int = 1, configSuperscalarCounterMode: Int = SuperscalarCSRMode.NONE, configNPerfCounters: Int = 0) extends Config(
+class WithNLargeBooms(n: Int = 1, configSuperscalarCounterMode: Int = SuperscalarCSRMode.NONE, configNPerfCounters: Int = 0, configDCacheNSets: Int = 64) extends Config(
   new WithTAGELBPD ++ // Default to TAGE-L BPD
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
@@ -205,7 +205,7 @@ class WithNLargeBooms(n: Int = 1, configSuperscalarCounterMode: Int = Superscala
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),
             dcache = Some(
-              DCacheParams(rowBits = 128, nSets=64, nWays=8, nMSHRs=4, nTLBWays=16)
+              DCacheParams(rowBits = 128, nSets=configDCacheNSets, nWays=8, nMSHRs=4, nTLBWays=16)
             ),
             icache = Some(
               ICacheParams(rowBits = 128, nSets=64, nWays=8, fetchBytes=4*4)
