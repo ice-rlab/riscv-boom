@@ -102,6 +102,7 @@ class LSUDMemIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
   val perf = Input(new Bundle {
     val acquire = Bool()
     val release = Bool()
+    val outstanding = Bool()
   })
 
 }
@@ -152,6 +153,7 @@ class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
     val acquire = Bool()
     val release = Bool()
     val tlbMiss = Bool()
+    val outstanding = Bool()
   })
 }
 
@@ -251,6 +253,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.core.perf.tlbMiss := io.ptw.req.fire
   io.core.perf.acquire := io.dmem.perf.acquire
   io.core.perf.release := io.dmem.perf.release
+  io.core.perf.outstanding := io.dmem.perf.outstanding
+    
+
+  // io.core.perf.outstanding := ldq.map(e => e.bits.executed && !e.bits.succeeded).reduce(_ || _)
 
 
 

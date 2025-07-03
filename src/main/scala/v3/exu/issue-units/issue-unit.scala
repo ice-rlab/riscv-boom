@@ -86,7 +86,11 @@ class IssueUnitIO(
   val flush_pipeline   = Input(Bool())
   val ld_miss          = Input(Bool())
 
-  val event_empty      = Output(Bool()) // used by HPM events; is the issue unit empty?
+
+  val perf = new Bundle{
+    val event_empty      = Output(Bool()) // used by HPM events; is the issue unit empty?
+    val has_slot_with_all_valid_operands = Output(Bool())
+  }
 
   val tsc_reg          = Input(UInt(width=xLen.W))
 }
@@ -162,7 +166,35 @@ abstract class IssueUnit(
     issue_slots(i).kill             := io.flush_pipeline
   }
 
-  io.event_empty := !(issue_slots.map(s => s.valid).reduce(_|_))
+  val empty = !issue_slots.map(_.valid).reduce(_||_)
+  val has_slot_with_all_valid_operands = issue_slots.map( slot => slot.valid && slot.debug.p1 && slot.debug.p2 && slot.debug.p3 && slot.debug.ppred).reduce(_&&_)
+
+  io.perf.event_empty := empty
+  io.perf.has_slot_with_all_valid_operands := has_slot_with_all_valid_operands
+
+  // val waitingOnLSU = Wire(Bool())
+  // waitingOnLSU := false.B
+
+  // for (slot <- issue_slots) {
+  //   // A uop is considered waiting if it’s valid, not ready to issue, and is a load
+  //   val isWaitingOnMem =
+  //     slot.valid &&
+  //     !(slot.iss_ready) && // all source operands not ready
+  //     (slot.uop.uopc === uopLD) // or use slot.uop.is_load if defined
+
+  //   when (isWaitingOnMem) {
+  //     waitingOnLSU := true.B
+  //   }
+  // }
+
+  // val currentlyWaitingOnLSUWakeup = !empty && waitingOnLSU && io.ld_miss
+
+
+
+
+
+
+
 
   val count = PopCount(slots.map(_.io.valid))
   dontTouch(count)
