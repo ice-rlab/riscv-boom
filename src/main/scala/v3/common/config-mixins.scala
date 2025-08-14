@@ -79,10 +79,78 @@ class WithRationalBoomTiles extends Config((site, here, up) => {
   }
 })
 
+class HasTopdownCaseStudy(caseStudy: Int = TopdownCaseStudy.NONE) extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(
+      tileParams = tp.tileParams.copy(
+        core = tp.tileParams.core.copy(
+          topdownCaseStudy = caseStudy
+        )
+      )
+    )
+    case other => other
+  }
+})
+
+class HasNPerfCounters(n: Int = 29) extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(
+      tileParams = tp.tileParams.copy(
+        core = tp.tileParams.core.copy(
+          nPerfCounters = n
+        )
+      )
+    )
+    case other => other
+  }
+})
+
+class HasPMUScalarCounters() extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(
+      tileParams = tp.tileParams.copy(
+        core = tp.tileParams.core.copy(
+          nPerfCounters = 29,
+          topdownCounterMode = TopdownPMUMode.SCALAR_COUNTERS
+        )
+      )
+    )
+    case other => other
+  }
+})
+
+class HasPMUAddWires() extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(
+      tileParams = tp.tileParams.copy(
+        core = tp.tileParams.core.copy(
+          nPerfCounters = 29,
+          topdownCounterMode = TopdownPMUMode.ADD_WIRES
+        )
+      )
+    )
+    case other => other
+  }
+})
+
+class HasPMUDistributedCounters() extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(
+      tileParams = tp.tileParams.copy(
+        core = tp.tileParams.core.copy(
+          nPerfCounters = 29,
+          topdownCounterMode = TopdownPMUMode.DISTRIBUTED_COUNTERS
+        )
+      )
+    )
+    case other => other
+  }
+})
+
 /**
  * 1-wide BOOM.
  */
-class WithNSmallBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMode.NONE, configNPerfCounters: Int = 29) extends Config(
+class WithNSmallBooms(n: Int = 1) extends Config(
   new WithTAGELBPD ++ // Default to TAGE-L BPD
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
@@ -106,8 +174,7 @@ class WithNSmallBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMode
               maxBrCount = 8,
               numFetchBufferEntries = 8,
               ftq = FtqParameters(nEntries=16),
-              nPerfCounters = configNPerfCounters,
-              topdownCounterMode = configTopdownCounterMode,
+              nPerfCounters = 29,
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),
             dcache = Some(
@@ -129,7 +196,7 @@ class WithNSmallBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMode
 /**
  * 2-wide BOOM.
  */
-class WithNMediumBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMode.NONE, configNPerfCounters: Int = 29) extends Config(
+class WithNMediumBooms(n: Int = 1) extends Config(
   new WithTAGELBPD ++ // Default to TAGE-L BPD
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
@@ -153,8 +220,7 @@ class WithNMediumBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMod
               maxBrCount = 12,
               numFetchBufferEntries = 16,
               ftq = FtqParameters(nEntries=32),
-              nPerfCounters = configNPerfCounters,
-              topdownCounterMode = configTopdownCounterMode,
+              nPerfCounters = 29,
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),
             dcache = Some(
@@ -176,7 +242,7 @@ class WithNMediumBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMod
 /**
  * 3-wide BOOM. Try to match the Cortex-A15.
  */
-class WithNLargeBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMode.NONE, configNPerfCounters: Int = 29, configDCacheNSets: Int = 64) extends Config(
+class WithNLargeBooms(n: Int = 1) extends Config(
   new WithTAGELBPD ++ // Default to TAGE-L BPD
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
@@ -199,13 +265,12 @@ class WithNLargeBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMode
               numStqEntries = 24,
               maxBrCount = 16,
               numFetchBufferEntries = 24,
-              nPerfCounters = configNPerfCounters,
-              topdownCounterMode = configTopdownCounterMode,
+              nPerfCounters = 29,
               ftq = FtqParameters(nEntries=32),
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),
             dcache = Some(
-              DCacheParams(rowBits = 128, nSets=configDCacheNSets, nWays=8, nMSHRs=4, nTLBWays=16)
+              DCacheParams(rowBits = 128, nSets=64, nWays=8, nMSHRs=4, nTLBWays=16)
             ),
             icache = Some(
               ICacheParams(rowBits = 128, nSets=64, nWays=8, fetchBytes=4*4)
@@ -224,7 +289,7 @@ class WithNLargeBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMode
 /**
  * 4-wide BOOM.
  */
-class WithNMegaBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMode.NONE, configNPerfCounters: Int = 29, configTopdownCaseStudy: Int = TopdownCaseStudy.NONE) extends Config(
+class WithNMegaBooms(n: Int = 1) extends Config(
   new WithTAGELBPD ++ // Default to TAGE-L BPD
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
@@ -248,9 +313,7 @@ class WithNMegaBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMode.
               maxBrCount = 20,
               numFetchBufferEntries = 32,
               enablePrefetching = true,
-              nPerfCounters = configNPerfCounters,
-              topdownCounterMode = configTopdownCounterMode,
-              topdownCaseStudy = configTopdownCaseStudy,
+              nPerfCounters = 29,
               ftq = FtqParameters(nEntries=40),
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),
@@ -273,7 +336,7 @@ class WithNMegaBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMode.
 /**
  * 5-wide BOOM.
   */
-class WithNGigaBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMode.NONE, configNPerfCounters: Int = 29) extends Config(
+class WithNGigaBooms(n: Int = 1) extends Config(
   new WithTAGELBPD ++ // Default to TAGE-L BPD
   new Config((site, here, up) => {
     case TilesLocated(InSubsystem) => {
@@ -297,8 +360,7 @@ class WithNGigaBooms(n: Int = 1, configTopdownCounterMode: Int = TopdownCSRMode.
               maxBrCount = 20,
               numFetchBufferEntries = 35,
               enablePrefetching = true,
-              nPerfCounters = configNPerfCounters,
-              topdownCounterMode = configTopdownCounterMode,
+              nPerfCounters = 29,
               numDCacheBanks = 1,
               ftq = FtqParameters(nEntries=40),
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))

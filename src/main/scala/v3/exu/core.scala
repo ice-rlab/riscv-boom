@@ -252,7 +252,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   // Uarch Hardware Performance Events (HPEs)
 
   // mode switches
-  val DISTR = if (boomParams.topdownCounterMode == TopdownCSRMode.DISTRIBUTED_COUNTERS) true else false;
+  val DISTR = if (boomParams.topdownCounterMode == TopdownPMUMode.DISTRIBUTED_COUNTERS) true else false;
   val NOEXP = if (boomParams.topdownCaseStudy == TopdownCaseStudy.NONE) true else false;
 
   // =========================
@@ -455,7 +455,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   }
 
   // set of scalar events
-  val scalarEventsSeq = if (boomParams.topdownCounterMode == TopdownCSRMode.SCALAR_COUNTERS) (
+  val scalarEventsSeq = if (boomParams.topdownCounterMode == TopdownPMUMode.SCALAR_COUNTERS) (
     if (NOEXP) (
       Seq.tabulate(retireWidth)(x => ("uops retired" + x, () => rob.io.commit.valids(x)))
       ++ Seq.tabulate(retireWidth)(x => ("fence" + x, () => rob.io.commit.valids(x) && rob.io.commit.uops(x).is_fence || rob.io.commit.uops(x).is_fencei))
@@ -481,7 +481,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   ) else null;
 
   // set of add wires events
-  val addwiresEventsSeq = if (boomParams.topdownCounterMode == TopdownCSRMode.ADD_WIRES) (
+  val addwiresEventsSeq = if (boomParams.topdownCounterMode == TopdownPMUMode.ADD_WIRES) (
     if (NOEXP) (
       Seq(
         (
@@ -647,7 +647,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
   // performance event monitoring
   val perfEvents = boomParams.topdownCounterMode match {
-    case TopdownCSRMode.NONE =>
+    case TopdownPMUMode.NONE =>
       new freechips.rocketchip.rocket.EventSets(Seq(
         new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
           ("exception", () => rob.io.com_xcpt.valid)
@@ -656,7 +656,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
           ("exception", () => rob.io.com_xcpt.valid)
         ))
       ))
-    case TopdownCSRMode.SCALAR_COUNTERS =>
+    case TopdownPMUMode.SCALAR_COUNTERS =>
       new freechips.rocketchip.rocket.EventSets(Seq(
         new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
           ("exception", () => rob.io.com_xcpt.valid)
@@ -682,9 +682,9 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
           scalarEventsSeq
         )
       ))
-    case TopdownCSRMode.ADD_WIRES =>
+    case TopdownPMUMode.ADD_WIRES =>
       new freechips.rocketchip.rocket.SuperscalarEventSets(addwiresEventsSeq)
-    case TopdownCSRMode.DISTRIBUTED_COUNTERS =>
+    case TopdownPMUMode.DISTRIBUTED_COUNTERS =>
       new freechips.rocketchip.rocket.EventSets(Seq(
         new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
           ("exception", () => rob.io.com_xcpt.valid)
@@ -710,13 +710,13 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   }
 
   val csr = boomParams.topdownCounterMode match {
-    case TopdownCSRMode.NONE =>
+    case TopdownPMUMode.NONE =>
       Module(new freechips.rocketchip.rocket.CSRFile(perfEvents.asInstanceOf[freechips.rocketchip.rocket.EventSets], boomParams.customCSRs.decls))
-    case TopdownCSRMode.SCALAR_COUNTERS =>
+    case TopdownPMUMode.SCALAR_COUNTERS =>
       Module(new freechips.rocketchip.rocket.CSRFile(perfEvents.asInstanceOf[freechips.rocketchip.rocket.EventSets], boomParams.customCSRs.decls))
-    case TopdownCSRMode.ADD_WIRES =>
+    case TopdownPMUMode.ADD_WIRES =>
       Module(new freechips.rocketchip.rocket.SuperscalarCSRFile(perfEvents.asInstanceOf[freechips.rocketchip.rocket.SuperscalarEventSets], boomParams.customCSRs.decls))
-    case TopdownCSRMode.DISTRIBUTED_COUNTERS =>
+    case TopdownPMUMode.DISTRIBUTED_COUNTERS =>
       Module(new freechips.rocketchip.rocket.CSRFile(perfEvents.asInstanceOf[freechips.rocketchip.rocket.EventSets], boomParams.customCSRs.decls))
     case _ => null
   }
@@ -732,13 +732,13 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   //val icache_blocked = !(io.ifu.fetchpacket.valid || RegNext(io.ifu.fetchpacket.valid))
   val icache_blocked = false.B
   csr.io.counters foreach { c => c.inc := RegNext(boomParams.topdownCounterMode match {
-      case TopdownCSRMode.NONE =>
+      case TopdownPMUMode.NONE =>
         perfEvents.asInstanceOf[freechips.rocketchip.rocket.EventSets].evaluate(c.eventSel)
-      case TopdownCSRMode.SCALAR_COUNTERS =>
+      case TopdownPMUMode.SCALAR_COUNTERS =>
         perfEvents.asInstanceOf[freechips.rocketchip.rocket.EventSets].evaluate(c.eventSel)
-      case TopdownCSRMode.ADD_WIRES =>
+      case TopdownPMUMode.ADD_WIRES =>
         perfEvents.asInstanceOf[freechips.rocketchip.rocket.SuperscalarEventSets].evaluate(c.eventSel)
-      case TopdownCSRMode.DISTRIBUTED_COUNTERS =>
+      case TopdownPMUMode.DISTRIBUTED_COUNTERS =>
         perfEvents.asInstanceOf[freechips.rocketchip.rocket.EventSets].evaluate(c.eventSel)
       case _ => null
     })
@@ -812,7 +812,8 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
         "Num Int Phys Registers: " + numIntPhysRegs,
         "Num FP  Phys Registers: " + numFpPhysRegs,
         "Max Branch Count      : " + maxBrCount,
-        "Num PerfCounters      : " + nPerfCounters)
+        "Num PerfCounters      : " + nPerfCounters,
+        "Topdown PMU Mode      : " + boomParams.topdownCounterMode)
     + iregfile.toString + "\n"
     + BoomCoreStringPrefix(
         "Num Slow Wakeup Ports : " + numIrfWritePorts,

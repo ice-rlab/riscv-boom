@@ -20,7 +20,7 @@ import boom.v3.exu._
 import boom.v3.lsu._
 
 /* Superscalar aggregation mode */
-object TopdownCSRMode {
+object TopdownPMUMode {
   val NONE = 0                  // Do not track top-down events
   val SCALAR_COUNTERS = 1       // Count events separately
   val ADD_WIRES = 2             // Aggregate each separate event into a multi-bit increment signal
@@ -115,7 +115,7 @@ case class BoomCoreParams(
   trace: Boolean = false,
 
   /* performance counter architecture */
-  topdownCounterMode: Int = TopdownCSRMode.SCALAR_COUNTERS,
+  topdownCounterMode: Int = TopdownPMUMode.NONE,
   topdownCaseStudy: Int = TopdownCaseStudy.NONE,
 
   /* debug stuff */
@@ -323,10 +323,10 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val enableGHistStallRepair = boomParams.enableGHistStallRepair
   val enableBTBFastRepair = boomParams.enableBTBFastRepair
 
-  require(boomParams.topdownCounterMode == TopdownCSRMode.NONE ||
-    boomParams.topdownCounterMode == TopdownCSRMode.SCALAR_COUNTERS ||
-    boomParams.topdownCounterMode == TopdownCSRMode.ADD_WIRES ||
-    boomParams.topdownCounterMode == TopdownCSRMode.DISTRIBUTED_COUNTERS)
+  require(boomParams.topdownCounterMode == TopdownPMUMode.NONE ||
+    boomParams.topdownCounterMode == TopdownPMUMode.SCALAR_COUNTERS ||
+    boomParams.topdownCounterMode == TopdownPMUMode.ADD_WIRES ||
+    boomParams.topdownCounterMode == TopdownPMUMode.DISTRIBUTED_COUNTERS)
 
   //************************************
   // Implicitly calculated constants
