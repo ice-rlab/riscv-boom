@@ -102,7 +102,9 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
   // Hookup the issue unit perf
   io.perf.issue_unit_empty := issue_unit.io.perf.event_empty
   io.perf.has_slot_with_all_valid_operands := issue_unit.io.perf.has_slot_with_all_valid_operands
-  io.perf.wb_fires := fregfile.io.write_ports.map(_.valid)
+  io.perf.wb_fires := VecInit(Seq.fill(memWidth + 1)(false.B))
+
+  // io.perf.wb_fires := fregfile.io.write_ports.map(_.valid)
 
   //*************************************************************
   // Issue window logic

@@ -98,7 +98,7 @@ case class BoomCoreParams(
   nL2TLBEntries: Int = 512,
   val nPTECacheEntries: Int = 8, // TODO: check
   nL2TLBWays: Int = 1,
-  nLocalInterrupts: Int = 0,
+  nLocalInterrupts: Int = 1, // LBR interrupt
   useNMI: Boolean = false,
   useAtomics: Boolean = true,
   useDebug: Boolean = true,

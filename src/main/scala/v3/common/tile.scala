@@ -165,7 +165,7 @@ class BoomTileModuleImp(outer: BoomTile) extends BaseTileModuleImp(outer){
 
   outer.reportWFI(None) // TODO: actually report this?
 
-  outer.decodeCoreInterrupts(core.io.interrupts) // Decode the interrupt vector
+  
 
   // Pass through various external constants and reports
   outer.traceSourceNode.bundle <> core.io.trace
@@ -176,6 +176,20 @@ class BoomTileModuleImp(outer: BoomTile) extends BaseTileModuleImp(outer){
   outer.frontend.module.io.cpu <> core.io.ifu
   core.io.lsu <> lsu.io.core
 
+  // Handle LBR interrupt
+  val lbr_full_reg = RegNext(core.io.lbr_full_interrupt, init=false.B)
+
+  // Add another hardware-triggered interrupt
+  val int_bundle = Wire(new TileInterrupts()(outer.p))
+  outer.decodeCoreInterrupts(int_bundle)
+
+  // Drive one local interrupt line from lbr_full_reg
+  int_bundle.lip(0) := lbr_full_reg
+
+  // Connect interrupts to core
+  core.io.interrupts := int_bundle
+
+  dontTouch(int_bundle) 
   //fpuOpt foreach { fpu => core.io.fpu <> fpu.io } RocketFpu - not needed in boom
   core.io.rocc := DontCare
 

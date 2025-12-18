@@ -89,6 +89,80 @@ class WithRationalBoomTiles extends Config((site, here, up) => {
   }
 })
 
+
+
+/**
+ * PMU Configs
+ */
+
+class HasTopdownCaseStudy(caseStudy: Int = TopdownCaseStudy.NONE) extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(
+      tileParams = tp.tileParams.copy(
+        core = tp.tileParams.core.copy(
+          topdownCaseStudy = caseStudy
+        )
+      )
+    )
+    case other => other
+  }
+})
+
+class HasNPerfCounters(n: Int = 29) extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(
+      tileParams = tp.tileParams.copy(
+        core = tp.tileParams.core.copy(
+          nPerfCounters = n
+        )
+      )
+    )
+    case other => other
+  }
+})
+
+class HasPMUScalarCounters() extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(
+      tileParams = tp.tileParams.copy(
+        core = tp.tileParams.core.copy(
+          nPerfCounters = 29,
+          topdownCounterMode = TopdownPMUMode.SCALAR_COUNTERS
+        )
+      )
+    )
+    case other => other
+  }
+})
+
+class HasPMUAddWires() extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(
+      tileParams = tp.tileParams.copy(
+        core = tp.tileParams.core.copy(
+          nPerfCounters = 29,
+          topdownCounterMode = TopdownPMUMode.ADD_WIRES
+        )
+      )
+    )
+    case other => other
+  }
+})
+
+class HasPMUDistributedCounters() extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(
+      tileParams = tp.tileParams.copy(
+        core = tp.tileParams.core.copy(
+          nPerfCounters = 29,
+          topdownCounterMode = TopdownPMUMode.DISTRIBUTED_COUNTERS
+        )
+      )
+    )
+    case other => other
+  }
+})
+
 /**
  * 1-wide BOOM.
  */
