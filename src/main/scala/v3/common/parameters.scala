@@ -98,7 +98,7 @@ case class BoomCoreParams(
   nL2TLBEntries: Int = 512,
   val nPTECacheEntries: Int = 8, // TODO: check
   nL2TLBWays: Int = 1,
-  nLocalInterrupts: Int = 1, // LBR interrupt
+  nLocalInterrupts: Int = 1, // CTR interrupt
   useNMI: Boolean = false,
   useAtomics: Boolean = true,
   useDebug: Boolean = true,
@@ -117,7 +117,7 @@ case class BoomCoreParams(
   topdownCounterMode: Int = TopdownCSRMode.SCALAR_COUNTERS,
   topdownCaseStudy: Int = TopdownCaseStudy.NONE,
 
-  override val nLBREntries : Int = 0,
+  override val nCTREntries : Int = 0,
 
 
   /* debug stuff */
@@ -370,6 +370,6 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
 
   //************************************
   // Profiling hardware parameters
-  // val nLBREntries = boomParams.nLBREntries
+  // val nCTREntries = boomParams.nCTREntries
 
 }

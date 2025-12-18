@@ -43,7 +43,7 @@ import freechips.rocketchip.devices.tilelink.{PLICConsts, CLINTConsts}
 import boom.v3.common._
 import boom.v3.ifu.{GlobalHistory, HasBoomFrontendParameters}
 import boom.v3.exu.FUConstants._
-import boom.v3.prof.LBR
+import boom.v3.prof.CTR
 import boom.v3.util._
 
 /**
@@ -62,13 +62,13 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     val ptw_tlb = new freechips.rocketchip.rocket.TLBPTWIO()
     val trace = Output(new TraceBundle)
     val fcsr_rm = UInt(freechips.rocketchip.tile.FPConstants.RM_SZ.W)
-    val lbr_full_interrupt = Output(Bool())
+    val ctr_full_interrupt = Output(Bool())
   })
 
   io.ptw_tlb := DontCare
   io.ptw := DontCare
   io.ifu := DontCare
-  io.lbr_full_interrupt := false.B 
+  io.ctr_full_interrupt := false.B 
 
   //**********************************
   // construct all of the modules
@@ -498,24 +498,24 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   }
 
   //****************************************
-  // Initialize LBR
-  if (nLBREntries > 0){
+  // Initialize CTR
+  if (nCTREntries > 0){
     
-    val lbr = Module(new LBR)
-    io.lbr_full_interrupt := lbr.io.full
-    lbr.io.commit := rob.io.commit
-    lbr.io.cfg.en := csr.io.lbrcfg.en
-    lbr.io.cfg.clr := csr.io.lbrcfg.clr
+    val ctr = Module(new CTR)
+    io.ctr_full_interrupt := ctr.io.full
+    ctr.io.commit := rob.io.commit
+    ctr.io.cfg.en := csr.io.ctrcfg.en
+    ctr.io.cfg.clr := csr.io.ctrcfg.clr
 
-    for (i <- 0 until nLBREntries){
-      csr.io.lbr(i).valid := lbr.io.lbr_entries(i).valid
-      csr.io.lbr(i).from := lbr.io.lbr_entries(i).from
-      csr.io.lbr(i).to := lbr.io.lbr_entries(i).to
-      csr.io.lbr(i).m := lbr.io.lbr_entries(i).m
+    for (i <- 0 until nCTREntries){
+      csr.io.ctr(i).valid := ctr.io.ctr_entries(i).valid
+      csr.io.ctr(i).from := ctr.io.ctr_entries(i).from
+      csr.io.ctr(i).to := ctr.io.ctr_entries(i).to
+      csr.io.ctr(i).m := ctr.io.ctr_entries(i).m
     }
 
-    dontTouch(lbr.io)
-    println(s"${lbr}")
+    dontTouch(ctr.io)
+    println(s"${ctr}")
   }
 
   //****************************************

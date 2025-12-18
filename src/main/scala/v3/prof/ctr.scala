@@ -10,10 +10,10 @@ import boom.v3.common._
 import boom.v3.util._
 import boom.v3.exu.{CommitSignals, BrResolutionInfo}
 
-// TODO: Make sure compiles without LBR (should be good now)
+// TODO: Make sure compiles without CTR (should be good now)
 // TODO: Return? --> Return gets translated to jalr, so it should be fine.
-// TODO: Handle mispredictions --> Forward how the the bracnh was predicted into the LBR?
-// TODO: Abstract LBR class
+// TODO: Handle mispredictions --> Forward how the the bracnh was predicted into the CTR?
+// TODO: Abstract CTR class
 // TODO: Handle exceptions? Or other control flow pseudo instructions (not super performance critical right now)
 // TODO: Remove valid from the registers --> no valid signal should just have address zero, software can filter out
 // TODO: How can we move this around different stages in the pipeleine?
@@ -23,7 +23,7 @@ import boom.v3.exu.{CommitSignals, BrResolutionInfo}
 
 // TODO: How to emulate something like PEBS how should this interact with ?
 
-class LBREntry(implicit p: Parameters) extends BoomBundle {
+class CTREntry(implicit p: Parameters) extends BoomBundle {
   // val from = UInt(vaddrBitsExtended.W)
   // val to = UInt(vaddrBitsExtended.W)
   val valid = Bool()
@@ -32,23 +32,23 @@ class LBREntry(implicit p: Parameters) extends BoomBundle {
   val m = Bool() // Was this mispredicted?
 }
 
-class LBRcfg(implicit p: Parameters) extends BoomBundle {
+class CTRcfg(implicit p: Parameters) extends BoomBundle {
   val en = Bool()
   val clr = Bool()
 }
 
-class LBRIo(implicit p: Parameters) extends BoomBundle {
+class CTRIo(implicit p: Parameters) extends BoomBundle {
   val commit = Input(new CommitSignals())
-  val lbr_entries = Output(Vec(nLBREntries, new LBREntry()))
-  val cfg = Input(new LBRcfg())
+  val ctr_entries = Output(Vec(nCTREntries, new CTREntry()))
+  val cfg = Input(new CTRcfg())
   val full = Output(Bool())
 }
 
 // Is implemented as an N-entry shift register.
-class LBR(implicit p: Parameters) extends BoomModule {
-  val io = IO(new LBRIo())
+class CTR(implicit p: Parameters) extends BoomModule {
+  val io = IO(new CTRIo())
 
-  // Check all LBR signals and filter out all retired uops
+  // Check all CTR signals and filter out all retired uops
   val is_retiring = VecInit((0 until retireWidth).map { i =>
     io.commit.valids(i)
   })
@@ -71,15 +71,15 @@ class LBR(implicit p: Parameters) extends BoomModule {
       v && ((u.is_br && u.taken) || u.is_jal || u.is_jalr) // TODO: sfb?
     }
 
-  val is_new_lbr_entry: Seq[Bool] =
+  val is_new_ctr_entry: Seq[Bool] =
     is_first_cfi.zipWithIndex.map { case (cfi, i) =>
       cfi && uops(i + 1)._2
     }
 
   // New entries in this cycle, with valid folded into the entry itself
   val rawNew = VecInit((0 until retireWidth).map { i =>
-    val e = Wire(new LBREntry())
-    val fire = io.cfg.en && is_new_lbr_entry(i)
+    val e = Wire(new CTREntry())
+    val fire = io.cfg.en && is_new_ctr_entry(i)
 
     e.valid := fire
     e.from  := Mux(fire, uops(i)._1.debug_pc, 0.U)
@@ -89,10 +89,10 @@ class LBR(implicit p: Parameters) extends BoomModule {
     e
   })
 
-  // LBR entries register file
+  // CTR entries register file
   val entries = RegInit(
-    VecInit.fill(nLBREntries) {
-      0.U.asTypeOf(new LBREntry()) // valid = false, from/to/m = 0
+    VecInit.fill(nCTREntries) {
+      0.U.asTypeOf(new CTREntry()) // valid = false, from/to/m = 0
     }
   )
 
@@ -101,14 +101,14 @@ class LBR(implicit p: Parameters) extends BoomModule {
 
   val nNew = PopCount(rawNew.map(_.valid))
 
-  val entriesNext = Wire(Vec(nLBREntries, new LBREntry()))
+  val entriesNext = Wire(Vec(nCTREntries, new CTREntry()))
   // Default to zero; we overwrite below
-  for (i <- 0 until nLBREntries) {
-    entriesNext(i) := 0.U.asTypeOf(new LBREntry())
+  for (i <- 0 until nCTREntries) {
+    entriesNext(i) := 0.U.asTypeOf(new CTREntry())
   }
 
-  val idxLast = Wire(Vec(nLBREntries, UInt(log2Ceil(nLBREntries).W)))
-  for (i <- 0 until nLBREntries) {
+  val idxLast = Wire(Vec(nCTREntries, UInt(log2Ceil(nCTREntries).W)))
+  for (i <- 0 until nCTREntries) {
     idxLast(i) := i.U - nNew // No wrap-around needed in current scheme
   }
 
@@ -121,27 +121,27 @@ class LBR(implicit p: Parameters) extends BoomModule {
     }
   }
 
-  for (i <- retireWidth until nLBREntries) {
+  for (i <- retireWidth until nCTREntries) {
     entriesNext(i) := entries(idxLast(i))
   }
 
   // Clear or update
   when (io.cfg.clr) {
-    entries := VecInit.fill(nLBREntries) {
-      0.U.asTypeOf(new LBREntry())
+    entries := VecInit.fill(nCTREntries) {
+      0.U.asTypeOf(new CTREntry())
     }
   }.elsewhen (nNew =/= 0.U) {
     entries := entriesNext
   }
 
   // Expose full entries (including .valid bit) to CSR side
-  io.lbr_entries := entries
+  io.ctr_entries := entries
 
   dontTouch(entries)
 
   override def toString: String = BoomCoreStringPrefix(
-    "==LBR==",
-    "LBR Entries        : " + nLBREntries,
-    "LBR entry width    : " + new LBREntry().getWidth + " bits"
+    "==CTR==",
+    "CTR Entries        : " + nCTREntries,
+    "CTR entry width    : " + new CTREntry().getWidth + " bits"
   )
 }
