@@ -504,6 +504,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     val ctr = Module(new CTR)
     io.ctr_full_interrupt := ctr.io.full
     ctr.io.commit := rob.io.commit
+    ctr.io.cfg.freeze_at_full := csr.io.ctrcfg.freeze_at_full
     ctr.io.cfg.en := csr.io.ctrcfg.en
     ctr.io.cfg.clr := csr.io.ctrcfg.clr
 
