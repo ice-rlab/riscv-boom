@@ -19,21 +19,6 @@ import boom.v3.ifu._
 import boom.v3.exu._
 import boom.v3.lsu._
 
-/* Superscalar aggregation mode */
-object TopdownPMUMode {
-  val NONE = 0                  // Do not track top-down events
-  val SCALAR_COUNTERS = 1       // Count events separately
-  val ADD_WIRES = 2             // Aggregate each separate event into a multi-bit increment signal
-  val DISTRIBUTED_COUNTERS = 3  // Use local counter and arbitrate each overflow as increment
-}
-
-object TopdownCaseStudy {
-  val NONE = 0        // Normal evaluation
-  val BASE = 1        // Track uops issued from each execution unit
-  val EXTRAPOLATE = 2 // Extrapolate the activity of one execution unit
-  val CORRELATED = 3  // Use a cheaper event that has correlated activity
-}
-
 /**
  * Default BOOM core parameters
  */
@@ -119,10 +104,6 @@ case class BoomCoreParams(
   mcontextWidth: Int = 0,
   scontextWidth: Int = 0,
   trace: Boolean = false,
-
-  /* performance counter architecture */
-  topdownCounterMode: Int = TopdownPMUMode.NONE,
-  topdownCaseStudy: Int = TopdownCaseStudy.NONE,
 
   /* debug stuff */
   enableCommitLogPrintf: Boolean = false,
@@ -329,11 +310,6 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val enableSFBOpt = boomParams.enableSFBOpt
   val enableGHistStallRepair = boomParams.enableGHistStallRepair
   val enableBTBFastRepair = boomParams.enableBTBFastRepair
-
-  require(boomParams.topdownCounterMode == TopdownPMUMode.NONE ||
-    boomParams.topdownCounterMode == TopdownPMUMode.SCALAR_COUNTERS ||
-    boomParams.topdownCounterMode == TopdownPMUMode.ADD_WIRES ||
-    boomParams.topdownCounterMode == TopdownPMUMode.DISTRIBUTED_COUNTERS)
 
   //************************************
   // Implicitly calculated constants

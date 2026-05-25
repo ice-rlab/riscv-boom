@@ -5,8 +5,8 @@ package boom.v3.perf
  *
  * BOOM/Rocket EventSets use:
  *
- *   bits [7:0]  = EventSet index
- *   bits [8+n]  = event bit n within that EventSet
+ *   bits [7:0] = EventSet index
+ *   bit  [8+n] = event bit n within that EventSet
  */
 case class BoomPerfEventMeta(
   name: String,
@@ -20,7 +20,7 @@ case class BoomPerfEventMeta(
   /*
    * Actual BOOM hardware mhpmevent selector.
    *
-   * For example:
+   * Examples:
    *
    *   set 0, bit 0 => 0x100
    *   set 1, bit 0 => 0x101
@@ -34,7 +34,7 @@ case class BoomPerfEventMeta(
 /*
  * BOOM performance-event definitions.
  *
- * The order of these sets and events must exactly match the EventSets
+ * The ordering of these sets and events must exactly match the EventSets
  * instantiated by the BOOM RTL.
  */
 object BoomPerfEvents {
@@ -42,9 +42,14 @@ object BoomPerfEvents {
   private val eventNames: Seq[Seq[String]] = Seq(
     /*
      * EventSet 0
+     *
+     * Reserved placeholder events.
      */
     Seq(
-      "exception"
+      "nop",
+      "nop",
+      "nop",
+      "nop"
     ),
 
     /*
@@ -73,15 +78,14 @@ object BoomPerfEvents {
     /*
      * EventSet 3
      *
-     * These entries must match your custom BOOM EventSet ordering.
+     * Top-Down Microarchitectural Analysis slot events.
      */
     Seq(
-      "uops dispatched",
-      "fetch bubble",
-      "uops retired",
-      "fence",
-      "uops issued",
-      "D$ blocked"
+      "TOPDOWN.SLOTS",
+      "TOPDOWN.RETIRING.SLOTS",
+      "TOPDOWN.FRONTEND_BOUND.SLOTS",
+      "TOPDOWN.BACKEND_BOUND.SLOTS",
+      "TOPDOWN.BAD_SPECULATION.SLOTS"
     )
   )
 
@@ -115,8 +119,8 @@ object BoomPerfEvents {
   /*
    * Compatibility mapping for PerfEventsResource.bind.
    *
-   * PerfEventsResource.bind ignores the first field and treats the second
-   * field as the raw mhpmevent selector.
+   * PerfEventsResource.bind ignores the first tuple field and treats the
+   * second field as the raw mhpmevent selector.
    */
   def pmuMappings: Seq[(BigInt, BigInt)] =
     rawPmuSelectors.map { selector =>
@@ -132,4 +136,3 @@ object BoomPerfEvents {
     eventSets(set).map(_.name)
   }
 }
-
