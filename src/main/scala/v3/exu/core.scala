@@ -44,6 +44,7 @@ import boom.v3.common._
 import boom.v3.ifu.{GlobalHistory, HasBoomFrontendParameters}
 import boom.v3.exu.FUConstants._
 import boom.v3.util._
+import boom.v3.perf.{CTR}
 
 /**
  * Top level core object that connects the Frontend to the rest of the pipeline.
@@ -281,6 +282,35 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   //val icache_blocked = !(io.ifu.fetchpacket.valid || RegNext(io.ifu.fetchpacket.valid))
   val icache_blocked = false.B
   csr.io.counters foreach { c => c.inc := RegNext(perfEvents.evaluate(c.eventSel)) }
+
+  if (usingCTR) {
+    require(csr.io.scsrind.isDefined, "CTR requires scsrind IO")
+    require(csr.io.ctr.isDefined, "CTR requires ctr IO")
+
+    val ctr = Module(new CTR)
+    val csrCtr = csr.io.ctr.get
+
+    ctr.io.commit := rob.io.commit
+    ctr.io.scsrind <> csr.io.scsrind.get
+
+    ctr.io.mctrctl := csrCtr.mctrctl
+    ctr.io.sctrstatus := csrCtr.sctrstatus
+    ctr.io.sctrdepth := csrCtr.sctrdepth
+    ctr.io.sctrclr := csrCtr.sctrclr
+    ctr.io.status := csr.io.status
+
+    csrCtr.sctrstatus_next       := ctr.io.sctrstatus_next
+    csrCtr.sctrstatus_next_valid := ctr.io.sctrstatus_next_valid
+
+    ctr.io.interrupt := csr.io.interrupt
+    ctr.io.interrupt_cause := csr.io.interrupt_cause
+
+    // ctr.io.get_ftq_pc := DontCare
+    // ctr.io.get_ftq_pc.pc               := io.ifu.get_pc(0).pc
+    // ctr.io.get_ftq_pc.entry            := io.ifu.get_pc(0).entry
+    // ctr.io.get_ftq_pc.next_val         := io.ifu.get_pc(0).next_val
+    // ctr.io.get_ftq_pc.next_pc          := io.ifu.get_pc(0).next_pc
+  }
 
   //****************************************
   // Time Stamp Counter & Retired Instruction Counter

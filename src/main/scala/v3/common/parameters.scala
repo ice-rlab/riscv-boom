@@ -67,6 +67,10 @@ case class BoomCoreParams(
   numRasEntries: Int = 32,
   enableRasTopRepair: Boolean = true,
 
+  /* CTR */
+  useCTR : Boolean = false,
+  nCTREntries : Int = 0,
+
   /* more stuff */
   useCompressed: Boolean = true,
   useFetchMonitor: Boolean = true,
@@ -120,6 +124,7 @@ case class BoomCoreParams(
   val useZba = false
   val useZbb = false
   val useZbs = false
+
   override val useVector = false
   override def customCSRs(implicit p: Parameters) = new BoomCustomCSRs
 }

@@ -86,6 +86,10 @@ case class BoomCoreParams(
   numRasEntries: Int = 32,
   enableRasTopRepair: Boolean = true,
 
+  /* CTR */
+  useCTR : Boolean = false,
+  nCTREntries : Int = 0,
+
   /* more stuff */
   useCompressed: Boolean = true,
   useFetchMonitor: Boolean = true,
