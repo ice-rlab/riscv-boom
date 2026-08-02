@@ -90,6 +90,10 @@ case class BoomCoreParams(
   useCTR : Boolean = false,
   nCTREntries : Int = 0,
 
+  /* MAR */
+  useMAR : Boolean = false,
+  nMAREntries : Int = 0,
+
   /* more stuff */
   useCompressed: Boolean = true,
   useFetchMonitor: Boolean = true,

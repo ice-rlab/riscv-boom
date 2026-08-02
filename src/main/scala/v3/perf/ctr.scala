@@ -11,7 +11,8 @@ import freechips.rocketchip.rocket.{
   CTRStatus,
   IndirectCSRIO,
   IndirectCSRRange,
-  MStatus
+  SIndirectCSRRanges,
+  MStatus,
 }
 
 import boom.v3.ifu.{GetPCFromFtqIO}
@@ -43,8 +44,10 @@ class CTRIo(implicit p: Parameters) extends BoomBundle {
   // val get_ftq_pc = new GetPCFromFtqIO()
 
   // Indirect CSR entry-register access
-  val scsrind = Flipped(new IndirectCSRIO(xLen))
-
+  val scsrind = Flipped(new IndirectCSRIO(
+    xLen,
+    Seq(SIndirectCSRRanges.ctr)
+  ))
   // Direct CTR CSRs from CSR.scala
   val mctrctl = Input(new CTRCtl())
   val sctrstatus = Input(new CTRStatus())
@@ -219,28 +222,23 @@ class CTR(implicit p: Parameters) extends BoomModule {
   }
 
   /*
-   * Indirect CSR read path.
-   *
-   * Logical CTR entries are exposed at indices:
-   *   0x200 through 0x200 + nCTREntries - 1
-   *
-   * logical 0 = most recent entry
-   * logical 1 = previous entry
-   */
-  val ctr = IndirectCSRRange(
-    name = "ctr",
-    base = 0x200,
-    size = nCTREntries
-  )
+  * Indirect CSR read path.
+  *
+  * Logical CTR entries are exposed at indices:
+  *   0x200 through 0x200 + nCTREntries - 1
+  *
+  * logical 0 = most recent entry
+  * logical 1 = previous entry
+  */
+  val ctrRange = SIndirectCSRRanges.ctr
 
-  val inCtrRange =
-    io.scsrind.index >= ctr.base.U &&
-      io.scsrind.index < (ctr.base + ctr.size).U
+  val inCtrRange = ctrRange.hit(io.scsrind.index)
+  val logicalIdx = ctrRange.offset(io.scsrind.index)
+  val physIdx    = ctrPhysIndex(writePtr, logicalIdx)
 
-  val logicalIdx = io.scsrind.index - ctr.base.U
-  val physIdx = ctrPhysIndex(writePtr, logicalIdx)
-
-  io.scsrind.rdata := 0.U
+  // This module only has one decoded indirect-CSR response slot.
+  io.scsrind.resp(0).hit   := inCtrRange
+  io.scsrind.resp(0).rdata := 0.U
 
   when(inCtrRange) {
     when(io.scsrind.wen) {
@@ -249,13 +247,13 @@ class CTR(implicit p: Parameters) extends BoomModule {
 
     switch(io.scsrind.reg) {
       is(0.U) {
-        io.scsrind.rdata := ctrsource(physIdx).asUInt
+        io.scsrind.resp(0).rdata := ctrsource(physIdx).asUInt
       }
       is(1.U) {
-        io.scsrind.rdata := ctrtarget(physIdx).asUInt
+        io.scsrind.resp(0).rdata := ctrtarget(physIdx).asUInt
       }
       is(2.U) {
-        io.scsrind.rdata := ctrdata(physIdx).asUInt
+        io.scsrind.resp(0).rdata := ctrdata(physIdx).asUInt
       }
     }
   }

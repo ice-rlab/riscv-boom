@@ -51,6 +51,7 @@ import freechips.rocketchip.util.Str
 
 import boom.v3.common._
 import boom.v3.exu.{BrUpdateInfo, Exception, FuncUnitResp, CommitSignals, ExeUnitResp}
+import boom.v3.perf.{MARRecord, MARLSUIO}
 import boom.v3.util.{BoolToChar, AgePriorityEncoder, IsKilledByBranch, GetNewBrMask, WrapInc, IsOlder, UpdateBrMask}
 
 class LSUExeIO(implicit p: Parameters) extends BoomBundle()(p)
@@ -104,7 +105,6 @@ class LSUDMemIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
     val release = Bool()
     val outstanding = Bool()
   })
-
 }
 
 class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
@@ -155,6 +155,8 @@ class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
     val tlbMiss = Bool()
     val outstanding = Bool()
   })
+
+  val mar = new MARLSUIO()
 }
 
 class LSUIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
@@ -267,7 +269,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
 
   def widthMap[T <: Data](f: Int => T) = VecInit((0 until memWidth).map(f))
-
 
   //-------------------------------------------------------------
   //-------------------------------------------------------------
@@ -838,6 +839,32 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     }
 
     //-------------------------------------------------------------
+    // MAR: record at LSU/DCache fire time
+    for (w <- 0 until memWidth) {
+      io.core.mar.records(w).valid := false.B
+      io.core.mar.records(w).bits  := 0.U.asTypeOf(new MARRecord)
+
+      when (dmem_req_fire(w)) {
+        io.core.mar.records(w).valid := true.B
+
+        io.core.mar.records(w).bits.pc    := dmem_req(w).bits.uop.debug_pc
+        io.core.mar.records(w).bits.addr  := dmem_req(w).bits.addr
+        io.core.mar.records(w).bits.time  := io.core.tsc_reg
+        io.core.mar.records(w).bits.prv   := io.ptw.status.prv
+
+        io.core.mar.records(w).bits.isLoad  := dmem_req(w).bits.uop.uses_ldq
+        io.core.mar.records(w).bits.isStore := dmem_req(w).bits.uop.uses_stq || dmem_req(w).bits.uop.is_amo
+
+        io.core.mar.records(w).bits.tpe := Cat(
+          dmem_req(w).bits.is_hella,
+          dmem_req(w).bits.uop.is_amo,
+          dmem_req(w).bits.uop.uses_stq || dmem_req(w).bits.uop.is_amo,
+          dmem_req(w).bits.uop.uses_ldq
+        )
+      }
+    }
+
+    //-------------------------------------------------------------
     // Write Addr into the LAQ/SAQ
     when (will_fire_load_incoming(w) || will_fire_load_retry(w))
     {
@@ -1396,6 +1423,78 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   when (spec_ld_succeed) {
     io.core.ld_miss := false.B
   }
+
+  //-------------------------------------------------------------
+  // MARQ --> impl 2 records at memory response
+  
+  // for (w <- 0 until memWidth) {
+  // when (io.dmem.resp(w).valid) {
+  //   when (io.dmem.resp(w).bits.uop.uses_ldq) {
+  //     val ldq_idx = io.dmem.resp(w).bits.uop.ldq_idx
+
+  //     io.core.mar.records(w).valid := true.B
+  //     io.core.mar.records(w).bits.pc   := io.dmem.resp(w).bits.uop.debug_pc
+  //     io.core.mar.records(w).bits.addr := ldq(ldq_idx).bits.addr.bits
+  //     io.core.mar.records(w).bits.time := io.core.tsc_reg
+  //     io.core.mar.records(w).bits.prv  := io.ptw.status.prv
+
+  //     io.core.mar.records(w).bits.isLoad  := true.B
+  //     io.core.mar.records(w).bits.isStore := false.B
+
+  //     io.core.mar.records(w).bits.tpe := Cat(
+  //       io.dmem.resp(w).bits.is_hella,
+  //       false.B, // isAMO
+  //       false.B, // isStore
+  //       true.B   // isLoad
+  //     )
+  //   } .elsewhen (io.dmem.resp(w).bits.uop.uses_stq) {
+  //     val stq_idx = io.dmem.resp(w).bits.uop.stq_idx
+
+  //     io.core.mar.records(w).valid := true.B
+  //     io.core.mar.records(w).bits.pc   := io.dmem.resp(w).bits.uop.debug_pc
+  //     io.core.mar.records(w).bits.addr := stq(stq_idx).bits.addr.bits
+  //     io.core.mar.records(w).bits.time := io.core.tsc_reg
+  //     io.core.mar.records(w).bits.prv  := io.ptw.status.prv
+
+  //     io.core.mar.records(w).bits.isLoad  := false.B
+  //     io.core.mar.records(w).bits.isStore := true.B
+
+  //     io.core.mar.records(w).bits.tpe := Cat(
+  //       io.dmem.resp(w).bits.is_hella,
+  //       io.dmem.resp(w).bits.uop.is_amo,
+  //       true.B,  // isStore
+  //       false.B  // isLoad
+  //     )
+  //   }
+  // }
+
+  // Store-load forwarding writeback path
+  // when (!dmem_resp_fired(w) && wb_forward_valid(w)) {
+  //   val f_idx       = wb_forward_ldq_idx(w)
+  //   val forward_uop = ldq(f_idx).bits.uop
+  //   val stq_e       = stq(wb_forward_stq_idx(w))
+  //   val data_ready  = stq_e.bits.data.valid
+  //   val live        = !IsKilledByBranch(io.core.brupdate, forward_uop)
+
+  //   when (data_ready && live) {
+  //     io.core.mar.records(w).valid := true.B
+  //     io.core.mar.records(w).bits.pc   := forward_uop.debug_pc
+  //     io.core.mar.records(w).bits.addr := wb_forward_ld_addr(w)
+  //     io.core.mar.records(w).bits.time := io.core.tsc_reg
+  //     io.core.mar.records(w).bits.prv  := io.ptw.status.prv
+
+  //     io.core.mar.records(w).bits.isLoad  := true.B
+  //     io.core.mar.records(w).bits.isStore := false.B
+
+  //     io.core.mar.records(w).bits.tpe := Cat(
+  //       false.B, // isHella
+  //       false.B, // isAMO
+  //       false.B, // isStore
+  //       true.B   // isLoad
+  //     )
+  //   }
+  // }
+
 
 
   //-------------------------------------------------------------

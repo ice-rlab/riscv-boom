@@ -36,7 +36,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.Instructions._
 import freechips.rocketchip.tile.{TraceBundle}
-import freechips.rocketchip.rocket.{Causes, PRV, TracedInstruction}
+import freechips.rocketchip.rocket.{Causes, PRV, TracedInstruction, IndirectCSRDecoder, SIndirectCSRRanges, IndirectCSRIO}
 import freechips.rocketchip.util.{Str, UIntIsOneOf, CoreMonitorBundle}
 import freechips.rocketchip.devices.tilelink.{PLICConsts, CLINTConsts}
 
@@ -44,7 +44,7 @@ import boom.v3.common._
 import boom.v3.ifu.{GlobalHistory, HasBoomFrontendParameters}
 import boom.v3.exu.FUConstants._
 import boom.v3.util._
-import boom.v3.perf.{CTR}
+import boom.v3.perf.{CTR, MAR}
 
 /**
  * Top level core object that connects the Frontend to the rest of the pipeline.
@@ -745,33 +745,90 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     })
   }
 
-  if (usingCTR) {
-    require(csr.io.scsrind.isDefined, "CTR requires scsrind IO")
-    require(csr.io.ctr.isDefined, "CTR requires ctr IO")
+  val scsrind = csr.io.scsrind
 
-    val ctr = Module(new CTR)
-    val csrCtr = csr.io.ctr.get
+  if (usingCTR || usingMAR) {
+    require(scsrind.isDefined, "CTR/MAR require scsrind IO")
 
-    ctr.io.commit := rob.io.commit
-    ctr.io.scsrind <> csr.io.scsrind.get
+    val scsrindFull = scsrind.get
 
-    ctr.io.mctrctl := csrCtr.mctrctl
-    ctr.io.sctrstatus := csrCtr.sctrstatus
-    ctr.io.sctrdepth := csrCtr.sctrdepth
-    ctr.io.sctrclr := csrCtr.sctrclr
-    ctr.io.status := csr.io.status
+    // Default full response vector exactly once
+    for (r <- scsrindFull.resp) {
+      r.hit   := false.B
+      r.rdata := 0.U
+    }
 
-    csrCtr.sctrstatus_next       := ctr.io.sctrstatus_next
-    csrCtr.sctrstatus_next_valid := ctr.io.sctrstatus_next_valid
+    if (usingCTR) {
+      require(csr.io.ctr.isDefined, "CTR requires ctr IO")
 
-    ctr.io.interrupt := csr.io.interrupt
-    ctr.io.interrupt_cause := csr.io.interrupt_cause
+      val ctr = Module(new CTR)
+      val csrCtr = csr.io.ctr.get
 
-    // ctr.io.get_ftq_pc := DontCare
-    // ctr.io.get_ftq_pc.pc               := io.ifu.get_pc(0).pc
-    // ctr.io.get_ftq_pc.entry            := io.ifu.get_pc(0).entry
-    // ctr.io.get_ftq_pc.next_val         := io.ifu.get_pc(0).next_val
-    // ctr.io.get_ftq_pc.next_pc          := io.ifu.get_pc(0).next_pc
+      val ctrScsrind = Wire(new IndirectCSRIO(xLen, Seq(SIndirectCSRRanges.ctr)))
+
+      ctrScsrind.index := scsrindFull.index
+      ctrScsrind.reg   := scsrindFull.reg
+      ctrScsrind.wdata := scsrindFull.wdata
+      ctrScsrind.wen   := scsrindFull.wen
+
+      ctr.io.scsrind <> ctrScsrind
+
+      val ctrIdx = SIndirectCSRRanges.all(coreParams).indexWhere(_.name == "ctr")
+      require(ctrIdx >= 0)
+
+      scsrindFull.resp(ctrIdx).hit   := ctrScsrind.resp(0).hit
+      scsrindFull.resp(ctrIdx).rdata := ctrScsrind.resp(0).rdata
+
+      ctr.io.commit := rob.io.commit
+
+      ctr.io.mctrctl    := csrCtr.mctrctl
+      ctr.io.sctrstatus := csrCtr.sctrstatus
+      ctr.io.sctrdepth  := csrCtr.sctrdepth
+      ctr.io.sctrclr    := csrCtr.sctrclr
+      ctr.io.status     := csr.io.status
+
+      csrCtr.sctrstatus_next       := ctr.io.sctrstatus_next
+      csrCtr.sctrstatus_next_valid := ctr.io.sctrstatus_next_valid
+
+      ctr.io.interrupt       := csr.io.interrupt
+      ctr.io.interrupt_cause := csr.io.interrupt_cause
+    }
+
+    if (usingMAR) {
+      require(csr.io.mar.isDefined, "MAR requires mar IO")
+
+      val mar = Module(new MAR)
+      val csrMar = csr.io.mar.get
+
+      val marScsrind = Wire(new IndirectCSRIO(xLen, Seq(SIndirectCSRRanges.mar)))
+
+      marScsrind.index := scsrindFull.index
+      marScsrind.reg   := scsrindFull.reg
+      marScsrind.wdata := scsrindFull.wdata
+      marScsrind.wen   := scsrindFull.wen
+
+      mar.io.scsrind <> marScsrind
+
+      val marIdx = SIndirectCSRRanges.all(coreParams).indexWhere(_.name == "mar")
+      require(marIdx >= 0)
+
+      scsrindFull.resp(marIdx).hit   := marScsrind.resp(0).hit
+      scsrindFull.resp(marIdx).rdata := marScsrind.resp(0).rdata
+
+      mar.io.marctl     := csrMar.marctl
+      mar.io.smarstatus := csrMar.smarstatus
+      mar.io.smardepth  := csrMar.smardepth
+      mar.io.status     := csr.io.status
+
+      mar.io.lsu.records := io.lsu.mar.records
+      mar.io.time        := csr.io.time
+
+      csrMar.smarstatus_next       := mar.io.smarstatus_next
+      csrMar.smarstatus_next_valid := mar.io.smarstatus_next_valid
+
+      mar.io.interrupt       := csr.io.interrupt
+      mar.io.interrupt_cause := csr.io.interrupt_cause
+    }
   }
 
   //****************************************
