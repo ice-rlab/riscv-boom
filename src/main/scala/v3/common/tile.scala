@@ -21,10 +21,12 @@ import freechips.rocketchip.tilelink._
 import freechips.rocketchip.interrupts._
 import freechips.rocketchip.util._
 import freechips.rocketchip.tile._
+import freechips.rocketchip.resources.{PerfEventsResource}
 
 import boom.v3.exu._
 import boom.v3.ifu._
 import boom.v3.lsu._
+import boom.v3.perf._
 import boom.v3.util.{BoomCoreStringPrefix}
 import freechips.rocketchip.prci.ClockSinkParameters
 
@@ -111,6 +113,11 @@ class BoomTile private(
   ResourceBinding {
     Resource(cpuDevice, "reg").bind(ResourceAddress(tileId))
   }
+
+  PerfEventsResource.bind(
+    eventToMhpmevent = BoomPerfEvents.pmuMappings,
+    nPerfCounters = tileParams.core.nPerfCounters
+  )
 
   override def makeMasterBoundaryBuffers(crossing: ClockCrossingType)(implicit p: Parameters) = crossing match {
     case _: RationalCrossing =>
