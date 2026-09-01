@@ -5,6 +5,7 @@ import chisel3.util.{PopCount, log2Ceil}
 import org.chipsalliance.cde.config.Parameters
 
 import boom.v3.common._
+import boom.v3.exu.{CommitSignals}
 import freechips.rocketchip.rocket.{EventSet, EventSets}
 
 class BoomPerfHPMEventsIO(implicit p: Parameters)
@@ -35,10 +36,22 @@ class BoomPerfHPMEventsIO(implicit p: Parameters)
   val dec_stalls = Input(Vec(coreWidth, Bool()))
   val dec_fire = Input(Vec(coreWidth, Bool()))
 
+  // ROB commit signals
+  val commit = Input(new CommitSignals())
+
   // Flush events
   val sfence_valid = Input(Bool())
   val redirect_val = Input(Bool())
   val redirect_flush = Input(Bool())
+
+  // Retired instruction-type events
+  val jump_retired = Output(UInt(retireWidth.W))
+  val branch_retired = Output(UInt(retireWidth.W))
+  val memory_retired = Output(UInt(retireWidth.W))
+  val load_retired = Output(UInt(retireWidth.W))
+  val store_retired = Output(UInt(retireWidth.W))
+  val amo_retired = Output(UInt(retireWidth.W))
+  val fp_retired = Output(UInt(retireWidth.W))
 
   val topdown_slots = Output(UInt(log2Ceil(retireWidth + 1).W))
   val topdown_retiring_slots = Output(UInt(log2Ceil(retireWidth + 1).W))
@@ -56,6 +69,49 @@ class BoomPerfHPMEvents(implicit p: Parameters)
   private def any(mask: UInt, hits: UInt): Bool = {
     (mask & hits).orR
   }
+
+
+  // Instruction type
+  val committed = io.commit.arch_valids
+
+  io.jump_retired := VecInit((0 until retireWidth).map { w =>
+    committed(w) &&
+      (io.commit.uops(w).is_jal || io.commit.uops(w).is_jalr)
+  }).asUInt
+
+  io.branch_retired := VecInit((0 until retireWidth).map { w =>
+    committed(w) &&
+      io.commit.uops(w).is_br
+  }).asUInt
+
+  io.memory_retired := VecInit((0 until retireWidth).map { w =>
+    committed(w) &&
+      (io.commit.uops(w).uses_ldq ||
+      io.commit.uops(w).uses_stq ||
+      io.commit.uops(w).is_amo)
+  }).asUInt
+
+  io.load_retired := VecInit((0 until retireWidth).map { w =>
+    committed(w) &&
+      io.commit.uops(w).uses_ldq &&
+      !io.commit.uops(w).is_amo
+  }).asUInt
+
+  io.store_retired := VecInit((0 until retireWidth).map { w =>
+    committed(w) &&
+      io.commit.uops(w).uses_stq &&
+      !io.commit.uops(w).is_amo
+  }).asUInt
+
+  io.amo_retired := VecInit((0 until retireWidth).map { w =>
+    committed(w) &&
+      io.commit.uops(w).is_amo
+  }).asUInt
+
+  io.fp_retired := VecInit((0 until retireWidth).map { w =>
+    committed(w) &&
+      io.commit.uops(w).fp_val
+  }).asUInt
 
   private val topdownWidth = log2Ceil(retireWidth + 1)
 
@@ -126,15 +182,18 @@ class BoomPerfHPMEvents(implicit p: Parameters)
       0.U(topdownWidth.W))
 
   def perfEvents: EventSets = new EventSets(Seq(
+    // Let's make this be instruction type counters for now.
     new EventSet(any, Seq(
-      ("nop", () => false.B),
-      ("nop", () => false.B),
-      ("nop", () => false.B),
-      ("nop", () => false.B)
+      ("inst_retired.jump",   () => io.jump_retired),
+      ("inst_retired.branch", () => io.branch_retired),
+      ("inst_retired.memory", () => io.memory_retired),
+      ("inst_retired.load",   () => io.load_retired),
+      ("inst_retired.store",  () => io.store_retired),
+      ("inst_retired.amo",    () => io.amo_retired),
+      ("inst_retired.fp",     () => io.fp_retired)
     )),
-
     new EventSet(any, Seq(
-      ("nop",                                () => false.B),
+      ("nop",                                () => false.B.asUInt),
       ("branch misprediction",              () => io.branch_mispredict.asUInt),
       ("control-flow target misprediction", () => io.cfi_target_mispredict.asUInt),
       ("flush",                             () => io.rob_flush.asUInt),

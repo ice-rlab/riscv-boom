@@ -41,19 +41,20 @@ object BoomPerfEvents {
 
   private val eventNames: Seq[Seq[String]] = Seq(
     /*
-     * EventSet 0
+     * EventSet 0 (Instruction)
      *
-     * Reserved placeholder events.
      */
     Seq(
-      "nop",
-      "nop",
-      "nop",
-      "nop"
+      "inst_retired.jump",
+      "inst_retired.branch",
+      "inst_retired.memory",
+      "inst_retired.load",
+      "inst_retired.store",
+      "inst_retired.amo",
+      "inst_retired.fp"
     ),
-
     /*
-     * EventSet 1
+     * EventSet 1 (Branching)
      */
     Seq(
       "nop",
@@ -64,7 +65,7 @@ object BoomPerfEvents {
     ),
 
     /*
-     * EventSet 2
+     * EventSet 2 (Memory hierarchy)
      */
     Seq(
       "I$ miss",
