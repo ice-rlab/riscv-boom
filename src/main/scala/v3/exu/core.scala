@@ -341,6 +341,8 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
       mar.io.marctl     := csrMar.marctl
       mar.io.smarstatus := csrMar.smarstatus
       mar.io.smardepth  := csrMar.smardepth
+      mar.io.smaralb    := csrMar.smaralb
+      mar.io.smaraub    := csrMar.smaraub
       mar.io.status     := csr.io.status
 
       mar.io.lsu.records := io.lsu.mar.records
@@ -351,6 +353,10 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
       mar.io.interrupt       := csr.io.interrupt
       mar.io.interrupt_cause := csr.io.interrupt_cause
+
+      mar.io.commit := rob.io.commit
+      mar.io.enq_valids := dis_fire
+      mar.io.enq_uops := dis_uops 
     }
   }
 
@@ -1409,6 +1415,8 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   boomPerfEvents.io.ifu_tlb_miss := io.ifu.perf.tlbMiss
   boomPerfEvents.io.lsu_tlb_miss := io.lsu.perf.tlbMiss
   boomPerfEvents.io.ptw_l2_miss := io.ptw.perf.l2miss
+
+  boomPerfEvents.io.commit := rob.io.commit
 
   boomPerfEvents.io.dec_valids := dec_valids
   boomPerfEvents.io.fetchpacket_valid := io.ifu.fetchpacket.valid
