@@ -772,6 +772,69 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   mshrs.io.meta_resp.valid      := !s2_nack_hit(0) || prober.io.mshr_wb_rdy
   mshrs.io.meta_resp.bits       := Mux1H(s2_tag_match_way(0), RegNext(meta(0).io.resp))
   when (mshrs.io.req.map(_.fire).reduce(_||_)) { replacer.miss }
+
+  // PrefetchProf events. Per memory lane (one annotation for the whole group, annotated as a sequence), all sampled in
+  // the s2 stage with physical addresses:
+  //  - l1d_demand:  a core load/store/AMO accepted at s2 (not a prefetch, not nacked, cacheable)
+  //  - l1d_pf_fill: a prefetch that allocates a new MSHR for a line not in the cache, i.e. a block is brought in
+  //  - l1d_demand_miss(_secondary): a demand access accepted into the MSHR file, and the subset that merged into an
+  //    MSHR already fetching that line (block_hit)
+  // A load that is later squashed by the core still accessed the cache, so it is counted. Any number of lanes can
+  // issue demands in the same cycle; the MSHR file takes at most one new request per cycle.
+  // The lifetime of a prefetched line is tracked per MSHR instead (see PrefetchProfMSHREvents): in BOOM a prefetched
+  // line waits in its MSHR until a demand claims it, so it is never evicted from the cache before being used.
+  private def ppLanes(name: String)(f: Int => Bool): Seq[Bool] =
+    Seq.tabulate(memWidth) { w => WireInit(f(w)).suggestName(s"pp_${name}_$w") }
+  val pp_cmd       = (w: Int) => s2_req(w).uop.mem_cmd
+  val pp_cacheable = Seq.tabulate(memWidth)(w => edge.manager.supportsAcquireBFast(s2_req(w).addr, lgCacheBlockBytes.U))
+  val pp_new_miss  = (w: Int) => mshrs.io.req(w).fire && !mshrs.io.block_hit(w) && !s2_tag_match(w) && pp_cacheable(w)
+  val pp_demand      = ppLanes("demand")(w =>
+    s2_valid(w) && s2_type === t_lsu && !s2_nack(w) && pp_cacheable(w) &&
+    (isRead(pp_cmd(w)) || isWrite(pp_cmd(w))) && !isPrefetch(pp_cmd(w)))
+  val pp_demand_miss = ppLanes("demand_miss")(w => mshrs.io.req(w).fire && !isPrefetch(pp_cmd(w)) && pp_cacheable(w))
+  val pp_demand_sec  = ppLanes("demand_miss_secondary")(w => pp_demand_miss(w) && mshrs.io.block_hit(w))
+  val pp_pf_fill     = ppLanes("pf_fill")(w => pp_new_miss(w) && isPrefetch(pp_cmd(w)))
+  val pp_req_addr    = Seq.tabulate(memWidth)(w => WireInit(s2_req(w).addr).suggestName(s"pp_req_addr_$w"))
+  midas.targetutils.PrefetchProfVecTarget(pp_demand,      "l1d_demand",                "L1D demand accesses, per memory lane")
+  midas.targetutils.PrefetchProfVecTarget(pp_demand,      "dmem_req_fire",             "Memory accesses (for the address histogram), per lane")
+  midas.targetutils.PrefetchProfVecTarget(pp_req_addr,    "l1d_req_addr",              "L1D s2 request address, per lane")
+  midas.targetutils.PrefetchProfVecTarget(pp_req_addr,    "dmem_addr",                 "Memory access address, per lane")
+  midas.targetutils.PrefetchProfVecTarget(pp_pf_fill,     "l1d_pf_fill",               "Prefetch miss that starts a line fill, per lane", p(PrefetchProfTagKey))
+  midas.targetutils.PrefetchProfVecTarget(pp_demand_miss, "l1d_demand_miss",           "Demand miss accepted into an MSHR, per lane")
+  midas.targetutils.PrefetchProfVecTarget(pp_demand_sec,  "l1d_demand_miss_secondary", "Demand miss merged into an in-flight MSHR, per lane")
+
+  // Prefetched-line lifetime, per MSHR (one annotation each for the whole group of MSHRs).
+  private def ppMshr(name: String)(f: PrefetchProfMSHREvents => Bool): Seq[Bool] =
+    Seq.tabulate(cfg.nMSHRs) { i => WireInit(f(mshrs.io.pp(i))).suggestName(s"pp_mshr_${name}_$i") }
+  midas.targetutils.PrefetchProfVecTarget(ppMshr("alloc")(_.alloc),   "pf_mshr_alloc",      "MSHR allocated by a prefetch (a line is being fetched)", p(PrefetchProfTagKey))
+  midas.targetutils.PrefetchProfVecTarget(ppMshr("timely")(_.timely), "pf_mshr_use_timely", "Demand claims a prefetched line that had arrived", p(PrefetchProfTagKey))
+  midas.targetutils.PrefetchProfVecTarget(ppMshr("late")(_.late),     "pf_mshr_use_late",   "Demand claims a prefetch still being fetched", p(PrefetchProfTagKey))
+  midas.targetutils.PrefetchProfVecTarget(ppMshr("drop")(_.drop),     "pf_mshr_drop",       "Prefetched line discarded before any demand", p(PrefetchProfTagKey))
+  // Prefetch requests accepted into the cache pipeline (one prefetch port), whether or not they end up fetching a line.
+  val pp_pf_issue      = WireInit(prefetch_fire)
+  val pp_pf_issue_addr = WireInit(mshrs.io.prefetch.bits.addr)
+  midas.targetutils.PrefetchProfTarget(pp_pf_issue, "pf_issue", "Prefetch request accepted by the L1D", p(PrefetchProfTagKey))
+  midas.targetutils.PrefetchProfTarget(pp_pf_issue_addr, "pf_issue_addr", "Prefetch request address", p(PrefetchProfTagKey))
+
+  // PrefetchProf: traffic between the L1D and the next level, on the TileLink A/C/D channels, for cached lines only
+  // (uncached MMIO accesses are not counted). Data is annotated as bytes moved this cycle, so the bridge can sum it
+  // without knowing the bus width:
+  //  - l1d_in_bytes:      GrantData beats received (lines fetched, by demand or prefetch)
+  //  - l1d_out_bytes:     ReleaseData / ProbeAckData beats sent (dirty lines written back)
+  //  - l1d_acquire:       Acquire requests sent (a line, or only a permission upgrade)
+  //  - l1d_release_ctrl:  Release / ProbeAck messages without data (clean evictions and probe replies)
+  private val pp_tl_beat_bytes = tl_out.d.bits.data.getWidth / 8
+  val pp_tl_in_bytes   = WireInit(Mux(tl_out.d.fire && tl_out.d.bits.opcode === TLMessages.GrantData, pp_tl_beat_bytes.U, 0.U))
+  val pp_tl_out_bytes  = WireInit(Mux(tl_out.c.fire &&
+    (tl_out.c.bits.opcode === TLMessages.ReleaseData || tl_out.c.bits.opcode === TLMessages.ProbeAckData), pp_tl_beat_bytes.U, 0.U))
+  val pp_tl_acquire    = WireInit(tl_out.a.fire &&
+    (tl_out.a.bits.opcode === TLMessages.AcquireBlock || tl_out.a.bits.opcode === TLMessages.AcquirePerm))
+  val pp_tl_ctrl       = WireInit(tl_out.c.fire &&
+    (tl_out.c.bits.opcode === TLMessages.Release || tl_out.c.bits.opcode === TLMessages.ProbeAck))
+  midas.targetutils.PrefetchProfTarget(pp_tl_in_bytes,  "l1d_in_bytes",     "L1D bytes received from the next level (GrantData)")
+  midas.targetutils.PrefetchProfTarget(pp_tl_out_bytes, "l1d_out_bytes",    "L1D bytes written back to the next level (ReleaseData/ProbeAckData)")
+  midas.targetutils.PrefetchProfTarget(pp_tl_acquire,   "l1d_acquire",      "L1D Acquire requests sent")
+  midas.targetutils.PrefetchProfTarget(pp_tl_ctrl,      "l1d_release_ctrl", "L1D Release/ProbeAck messages without data")
   tl_out.a <> mshrs.io.mem_acquire
 
   // probes and releases

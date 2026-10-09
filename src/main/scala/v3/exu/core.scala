@@ -151,6 +151,15 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
   require (exe_units.length == issue_units.map(_.issueWidth).sum)
 
+  // PrefetchProf: architecturally executed instructions retired this cycle (a count: up to retireWidth per cycle), and
+  // the PC of the youngest instruction retired most recently, as the core PC a prefetch is attributed to.
+  val pp_instr_ret = WireInit(PopCount(rob.io.commit.arch_valids))
+  val pp_commit_pc = RegEnable(
+    PriorityMux(rob.io.commit.arch_valids.reverse, rob.io.commit.uops.reverse.map(_.debug_pc)),
+    rob.io.commit.arch_valids.reduce(_ || _))
+  midas.targetutils.PrefetchProfTarget(pp_instr_ret, "instr_ret", "Instructions retired this cycle")
+  midas.targetutils.PrefetchProfTarget(pp_commit_pc, "core_pc", "PC of the last retired instruction")
+
   //***********************************
   // Pipeline State Registers and Wires
 
