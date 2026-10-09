@@ -33,6 +33,18 @@ class BoomDCacheReqInternal(implicit p: Parameters) extends BoomDCacheReq()(p)
 }
 
 
+/** PrefetchProf events of one MSHR, one-cycle pulses. A prefetch-only MSHR in BOOM does not install its line in the
+  * cache: the refilled data waits in the MSHR (state s_prefetch) until a demand merges into it, which installs the
+  * line, or until the MSHR is dropped or reused. So the lifetime of a prefetched line, until a demand claims it,
+  * is an MSHR lifetime.
+  */
+class PrefetchProfMSHREvents extends Bundle {
+  val alloc  = Bool() // allocated by a prefetch for a line not in the cache: a block is being fetched
+  val timely = Bool() // a demand claims the prefetched line, whose data had already arrived
+  val late   = Bool() // a demand claims the prefetch while it is still being fetched
+  val drop   = Bool() // the prefetched line is discarded without a demand claiming it
+}
+
 class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
   with HasL1HellaCacheParameters
 {
@@ -95,6 +107,9 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
     val perf = new Bundle {
       val active = Output(Bool())
     }
+
+    // PrefetchProf
+    val pp = Output(new PrefetchProfMSHREvents)
   })
 
   // TODO: Optimize this. We don't want to mess with cache during speculation
@@ -414,6 +429,30 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
       state := handle_pri_req(state)
     }
   }
+
+  // PrefetchProf bookkeeping. pp_pending: this MSHR holds a prefetched line that no demand has claimed yet.
+  //  alloc   a prefetch takes the MSHR for a line that is not in the cache
+  //  claim   a demand merges into it: timely if the data had already arrived (state s_prefetch) and the access can be
+  //          served from it, late otherwise (still being fetched, or a store needing more permission)
+  //  drop    it is discarded before any demand: a request to the same set, a probe or fence (clear_prefetch), a merge
+  //          that cannot be accepted, a new miss reusing the MSHR, or a prefetch merging into it (which installs the line
+  //          without a demand)
+  val pp_pending  = RegInit(false.B)
+  val pp_pri_fire = io.req_pri_val && io.req_pri_rdy
+  val pp_sec_fire = io.req_sec_val && io.req_sec_rdy
+  val pp_is_pf    = isPrefetch(io.req.uop.mem_cmd)
+  val (pp_perm_ok, _, _) = new_coh.onAccess(io.req.uop.mem_cmd)
+  val pp_claim    = pp_pending && pp_sec_fire && !pp_is_pf
+  val pp_arrived  = state === s_prefetch && pp_perm_ok
+  val pp_alloc    = pp_pri_fire && pp_is_pf && !io.req.tag_match
+  val pp_drop     = pp_pending && state === s_prefetch && !pp_claim &&
+                    ((io.req_sec_val && !io.req_sec_rdy) || io.clear_prefetch || pp_pri_fire || pp_sec_fire)
+  when (pp_claim || pp_drop) { pp_pending := false.B }
+  when (pp_alloc)            { pp_pending := true.B }
+  io.pp.alloc  := pp_alloc
+  io.pp.timely := pp_claim && pp_arrived
+  io.pp.late   := pp_claim && !pp_arrived
+  io.pp.drop   := pp_drop
 }
 
 class BoomIOMSHR(id: Int)(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
@@ -536,6 +575,9 @@ class BoomMSHRFile(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()
     val resp = Decoupled(new BoomDCacheResp)
     val secondary_miss = Output(Vec(memWidth, Bool()))
     val block_hit = Output(Vec(memWidth, Bool()))
+
+    // PrefetchProf: per-MSHR prefetch events
+    val pp = Output(Vec(cfg.nMSHRs, new PrefetchProfMSHREvents))
 
     val brupdate       = Input(new BrUpdateInfo)
     val exception    = Input(Bool())
@@ -697,6 +739,7 @@ class BoomMSHRFile(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()
     mshr.io.lb_resp            := lb_read_data
     lb_write_arb.io.in(i)      <> mshr.io.lb_write
 
+    io.pp(i)        := mshr.io.pp
     commit_vals(i)  := mshr.io.commit_val
     commit_addrs(i) := mshr.io.commit_addr
     commit_cohs(i)  := mshr.io.commit_coh
