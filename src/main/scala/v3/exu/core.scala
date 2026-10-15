@@ -46,6 +46,8 @@ import boom.v3.exu.FUConstants._
 import boom.v3.util._
 import boom.v3.perf.{CTR, MAR}
 
+import midas.targetutils.AutoTrace
+
 /**
  * Top level core object that connects the Frontend to the rest of the pipeline.
  */
@@ -1357,6 +1359,77 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
   // branch resolution
   rob.io.brupdate <> brupdate
+  
+  // AutoTrace testing
+  // Observe each ALU's branch resolution before the core merges the results.
+for ((alu, i) <- exe_units.alu_units.zipWithIndex) {
+  val branch = alu.io.brinfo
+
+  val target = Wire(new Bundle {
+    val pc = UInt(vaddrBitsExtended.W)
+    val robIdx = UInt(branch.uop.rob_idx.getWidth.W)
+    val branchMask = UInt(branch.uop.br_mask.getWidth.W)
+    val taken = Bool()
+    val mispredict = Bool()
+  })
+
+  target.pc := branch.uop.debug_pc
+  target.robIdx := branch.uop.rob_idx
+  target.branchMask := branch.uop.br_mask
+  target.taken := branch.taken
+  target.mispredict := branch.mispredict
+
+  AutoTrace(
+    target,
+    branch.valid,
+    s"branch_resolve_$i",
+    "Branch resolved in an ALU before retirement"
+  )
+
+  // Keep each ALU's last 32 branch resolutions before an L1D miss transaction.
+  AutoTrace.history(
+    target,
+    branch.valid,
+    io.lsu.perf.acquire,
+    32,
+    s"branch_history_on_l1d_acquire_$i",
+    "Last 32 branch resolutions before an L1 data-cache acquire, oldest first"
+  )
+}
+
+// Observe the corresponding architectural branch retirements.
+for (i <- 0 until coreWidth) {
+  val uop = rob.io.commit.uops(i)
+
+  val target = Wire(new Bundle {
+    val pc = UInt(vaddrBitsExtended.W)
+    val robIdx = UInt(uop.rob_idx.getWidth.W)
+    val taken = Bool()
+  })
+
+  target.pc := uop.debug_pc
+  target.robIdx := uop.rob_idx
+  target.taken := uop.taken
+
+  AutoTrace(
+    target,
+    rob.io.commit.arch_valids(i) && uop.is_br,
+    s"branch_commit_$i",
+    "Conditional branch retired architecturally"
+  )
+}
+
+AutoTrace.event(
+  io.lsu.perf.acquire,
+  "l1d_acquire",
+  "L1 data-cache miss acquire transaction"
+)
+
+AutoTrace.event(
+  brupdate.b1.mispredict_mask.orR,
+  "branch_mispredict",
+  "Branch misprediction recovery initiated"
+)
 
   exe_units.map(u => u.io.status := csr.io.status)
   if (usingFPU)
