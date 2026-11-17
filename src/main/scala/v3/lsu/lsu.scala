@@ -51,7 +51,7 @@ import freechips.rocketchip.util.Str
 
 import boom.v3.common._
 import boom.v3.exu.{BrUpdateInfo, Exception, FuncUnitResp, CommitSignals, ExeUnitResp}
-import boom.v3.perf.{MARRecord, MARLSUIO}
+import boom.v3.perf.{MARRecord, MARLSUIO, LSUTraceRecord, LSUTraceIO}
 import boom.v3.util.{BoolToChar, AgePriorityEncoder, IsKilledByBranch, GetNewBrMask, WrapInc, IsOlder, UpdateBrMask}
 
 class LSUExeIO(implicit p: Parameters) extends BoomBundle()(p)
@@ -69,6 +69,7 @@ class BoomDCacheReq(implicit p: Parameters) extends BoomBundle()(p)
   val addr  = UInt(coreMaxAddrBits.W)
   val data  = Bits(coreDataBits.W)
   val is_hella = Bool() // Is this the hellacache req? If so this is not tracked in LDQ or STQ
+  val pp_external_prefetch = Bool() // Hella request from the profiled external prefetch port
 }
 
 class BoomDCacheResp(implicit p: Parameters) extends BoomBundle()(p)
@@ -156,7 +157,8 @@ class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
     val outstanding = Bool()
   })
 
-  val mar = new MARLSUIO()
+  val mar = new MARLSUIO()          // For MAR
+  val lsuTrace = new LSUTraceIO()   // For TAPrefetcher
 }
 
 class LSUIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
@@ -245,6 +247,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // dead : wait for response, ignore it
   val hella_state           = RegInit(h_ready)
   val hella_req             = Reg(new rocket.HellaCacheReq)
+  private val ppExternalPortEnabled = p(rocket.ExternalPrefetchPortKey).contains(tileParams.tileId)
+  // BoomTile prepends one PTW requestor before the RoCCs. The external port replaces TAPrefetcher's RoCC slot, so its
+  // arbiter ID remains the last/only RoCC ID and can mark the request through LSU without changing M_XRD.
+  private val ppHellaPortCount = p(freechips.rocketchip.tile.BuildRoCC).size + 1
+  private val ppHellaPortIdBits = log2Up(ppHellaPortCount)
+  private val ppHellaTAPortId = p(freechips.rocketchip.tile.BuildRoCC).size // TA prefetcher is required to be the last/only RoCC
+  private val ppIsExternalPrefetch = if (ppExternalPortEnabled) {
+    require(p(freechips.rocketchip.tile.BuildRoCC).size == 1,
+      "The BOOM TA external prefetch path currently requires a single RoCC")
+    hella_req.tag(ppHellaPortIdBits - 1, 0) === ppHellaTAPortId.U(ppHellaPortIdBits.W)
+  } else false.B
   val hella_data            = Reg(new rocket.HellaCacheWriteData)
   val hella_paddr           = Reg(UInt(paddrBits.W))
   val hella_xcpt            = Reg(new rocket.HellaCacheExceptions)
@@ -761,7 +774,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.dmem.req.valid := dmem_req.map(_.valid).reduce(_||_)
   io.dmem.req.bits  := dmem_req
   val dmem_req_fire = widthMap(w => dmem_req(w).valid && io.dmem.req.fire)
-
   val s0_executing_loads = WireInit(VecInit((0 until numLdqEntries).map(x=>false.B)))
 
 
@@ -771,6 +783,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dmem_req(w).bits.addr  := 0.U
     dmem_req(w).bits.data  := 0.U
     dmem_req(w).bits.is_hella := false.B
+    dmem_req(w).bits.pp_external_prefetch := false.B
     mar_vaddr(w) := 0.U
 
     io.dmem.s1_kill(w) := false.B
@@ -828,6 +841,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).bits.uop.mem_size   := hella_req.size
       dmem_req(w).bits.uop.mem_signed := hella_req.signed
       dmem_req(w).bits.is_hella       := true.B
+      dmem_req(w).bits.pp_external_prefetch := ppIsExternalPrefetch
       mar_vaddr(w) := hella_req.addr
 
       hella_paddr := exe_tlb_paddr(w)
@@ -845,6 +859,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).bits.uop.mem_size   := hella_req.size
       dmem_req(w).bits.uop.mem_signed := hella_req.signed
       dmem_req(w).bits.is_hella       := true.B
+      dmem_req(w).bits.pp_external_prefetch := ppIsExternalPrefetch
       mar_vaddr(w) := hella_req.addr
     }
 
@@ -872,6 +887,28 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           dmem_req(w).bits.uop.uses_stq || dmem_req(w).bits.uop.is_amo,
           dmem_req(w).bits.uop.uses_ldq
         )
+      }
+
+    //-------------------------------------------------------------
+    // LSU trace observation record at LSU/DCache fire time
+      io.core.lsuTrace.records(w).valid := false.B
+      io.core.lsuTrace.records(w).bits  := 0.U.asTypeOf(new LSUTraceRecord)
+
+      when (dmem_req_fire(w)) {
+        io.core.lsuTrace.records(w).valid := true.B
+        io.core.lsuTrace.records(w).bits.pc := dmem_req(w).bits.uop.debug_pc
+        io.core.lsuTrace.records(w).bits.addr := mar_vaddr(w).asSInt.pad(xLen).asUInt
+        io.core.lsuTrace.records(w).bits.time := io.core.tsc_reg
+        io.core.lsuTrace.records(w).bits.tpe := Cat(
+          dmem_req(w).bits.is_hella,
+          dmem_req(w).bits.uop.is_amo,
+          dmem_req(w).bits.uop.uses_stq || dmem_req(w).bits.uop.is_amo,
+          dmem_req(w).bits.uop.uses_ldq
+        )
+        io.core.lsuTrace.records(w).bits.isLoad := dmem_req(w).bits.uop.uses_ldq
+        io.core.lsuTrace.records(w).bits.isIncomingLoad := will_fire_load_incoming(w)
+        io.core.lsuTrace.records(w).bits.prv := io.ptw.status.prv
+        io.core.lsuTrace.records(w).bits.rob_idx := dmem_req(w).bits.uop.rob_idx
       }
 
     //-------------------------------------------------------------

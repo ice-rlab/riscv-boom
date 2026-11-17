@@ -42,6 +42,27 @@ class WithBoomBranchPrintf extends Config((site, here, up) => {
   }
 })
 
+
+/** Enables BOOM L1D next-line prefetching for core sizes where it is disabled by default. */
+class WithBoomDataPrefetching extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+      enablePrefetching = true
+    )))
+    case other => other
+  }
+})
+
+/** Disables BOOM L1D next-line prefetching for the selected tiles. */
+class WithBoomNoDataPrefetching extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+      enablePrefetching = false
+    )))
+    case other => other
+  }
+})
+
 class WithNBoomPerfCounters(n: Int) extends Config((site, here, up) => {
   case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
     case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(

@@ -68,10 +68,10 @@ case class BoomCoreParams(
   enableRasTopRepair: Boolean = true,
 
   /* CTR */
-  useCTR : Boolean = false,
-  nCTREntries : Int = 0,
-  useMAR : Boolean = false,
-  nMAREntries : Int = 0,
+  override val useCTR : Boolean = false,
+  override val nCTREntries : Int = 0,
+  override val useMAR : Boolean = false,
+  override val nMAREntries : Int = 0,
 
   /* more stuff */
   useCompressed: Boolean = true,

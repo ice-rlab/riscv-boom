@@ -33,16 +33,20 @@ class BoomDCacheReqInternal(implicit p: Parameters) extends BoomDCacheReq()(p)
 }
 
 
-/** PrefetchProf events of one MSHR, one-cycle pulses. A prefetch-only MSHR in BOOM does not install its line in the
-  * cache: the refilled data waits in the MSHR (state s_prefetch) until a demand merges into it, which installs the
-  * line, or until the MSHR is dropped or reused. So the lifetime of a prefetched line, until a demand claims it,
-  * is an MSHR lifetime.
+/** PrefetchProf events of one MSHR. Native prefetch-only MSHRs keep their line in state s_prefetch until a demand
+  * claims it. TA requests remain ordinary loads (they need a response), so their profiler pulses are separate and
+  * the data-cache annotations also expose fill addresses and evictions for host-side lifetime tracking.
   */
 class PrefetchProfMSHREvents extends Bundle {
-  val alloc  = Bool() // allocated by a prefetch for a line not in the cache: a block is being fetched
-  val timely = Bool() // a demand claims the prefetched line, whose data had already arrived
-  val late   = Bool() // a demand claims the prefetch while it is still being fetched
-  val drop   = Bool() // the prefetched line is discarded without a demand claiming it
+  val alloc      = Bool() // allocated by a native cache prefetch
+  val timely     = Bool() // a demand claims a native prefetch whose data had arrived
+  val late       = Bool() // a demand claims a native prefetch while it is in flight
+  val drop       = Bool() // a native prefetch is discarded before demand
+  val tapAlloc  = Bool() // allocated by TAPrefetcherPrefetcher
+  val tapArrive = Bool() // TA line data completed its refill
+  val tapTimely = Bool() // a demand claims a completed TAPrefetcher-prefetched MSHR
+  val tapLate   = Bool() // a demand claims an in-flight TAPrefetcher-prefetched MSHR
+  val tapDrop   = Bool() // TAPrefetcher-prefetched miss is canceled before refill
 }
 
 class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
@@ -110,6 +114,7 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
 
     // PrefetchProf
     val pp = Output(new PrefetchProfMSHREvents)
+    val pp_addr = Output(UInt(coreMaxAddrBits.W))
   })
 
   // TODO: Optimize this. We don't want to mess with cache during speculation
@@ -202,6 +207,7 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
   io.commit_val          := false.B
   io.commit_addr         := req.addr
   io.commit_coh          := coh_on_grant
+  io.pp_addr             := Mux(io.req_pri_val && io.req_pri_rdy, io.req.addr, req.addr)
   io.meta_read.valid     := false.B
   io.meta_read.bits      := DontCare
   io.mem_finish.valid    := false.B
@@ -435,8 +441,8 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
   //  claim   a demand merges into it: timely if the data had already arrived (state s_prefetch) and the access can be
   //          served from it, late otherwise (still being fetched, or a store needing more permission)
   //  drop    it is discarded before any demand: a request to the same set, a probe or fence (clear_prefetch), a merge
-  //          that cannot be accepted, a new miss reusing the MSHR, or a prefetch merging into it (which installs the line
-  //          without a demand)
+  //          that cannot be accepted, a new miss reusing the MSHR, or a native prefetch merging into it, which can
+  //          install the line without a demand
   val pp_pending  = RegInit(false.B)
   val pp_pri_fire = io.req_pri_val && io.req_pri_rdy
   val pp_sec_fire = io.req_sec_val && io.req_sec_rdy
@@ -453,6 +459,30 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
   io.pp.timely := pp_claim && pp_arrived
   io.pp.late   := pp_claim && !pp_arrived
   io.pp.drop   := pp_drop
+
+  // TA's ordinary read command still returns its pointer data. These state bits annotate its MSHR lifetime only;
+  // cache installation and response behavior remain the normal M_XRD behavior.
+  val pp_tap_pending = RegInit(false.B)
+  val pp_tap_arrived = RegInit(false.B)
+  val pp_is_ta = io.req.pp_external_prefetch
+  val pp_tap_alloc = pp_pri_fire && pp_is_ta && !io.req.tag_match
+  val pp_tap_claim = pp_tap_pending && pp_sec_fire && !pp_is_ta && !isPrefetch(io.req.uop.mem_cmd)
+  val pp_tap_drop = pp_tap_pending && state === s_invalid && !pp_tap_arrived
+  val pp_tap_refill = io.mem_grant.fire && refill_done && pp_tap_pending
+  when (pp_tap_claim || (pp_tap_pending && state === s_invalid)) {
+    pp_tap_pending := false.B
+    pp_tap_arrived := false.B
+  }
+  when (pp_tap_alloc) {
+    pp_tap_pending := true.B
+    pp_tap_arrived := false.B
+  }
+  when (pp_tap_refill && !pp_tap_claim) { pp_tap_arrived := true.B }
+  io.pp.tapAlloc  := pp_tap_alloc
+  io.pp.tapArrive := pp_tap_refill
+  io.pp.tapTimely := pp_tap_claim && pp_tap_arrived
+  io.pp.tapLate   := pp_tap_claim && !pp_tap_arrived
+  io.pp.tapDrop   := pp_tap_drop
 }
 
 class BoomIOMSHR(id: Int)(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
@@ -578,6 +608,7 @@ class BoomMSHRFile(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()
 
     // PrefetchProf: per-MSHR prefetch events
     val pp = Output(Vec(cfg.nMSHRs, new PrefetchProfMSHREvents))
+    val pp_addr = Output(Vec(cfg.nMSHRs, UInt(coreMaxAddrBits.W)))
 
     val brupdate       = Input(new BrUpdateInfo)
     val exception    = Input(Bool())
@@ -740,6 +771,7 @@ class BoomMSHRFile(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()
     lb_write_arb.io.in(i)      <> mshr.io.lb_write
 
     io.pp(i)        := mshr.io.pp
+    io.pp_addr(i)   := mshr.io.pp_addr
     commit_vals(i)  := mshr.io.commit_val
     commit_addrs(i) := mshr.io.commit_addr
     commit_cohs(i)  := mshr.io.commit_coh

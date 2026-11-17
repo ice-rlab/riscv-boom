@@ -499,6 +499,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   replay_req(0).addr       := mshrs.io.replay.bits.addr
   replay_req(0).data       := mshrs.io.replay.bits.data
   replay_req(0).is_hella   := mshrs.io.replay.bits.is_hella
+  replay_req(0).pp_external_prefetch := mshrs.io.replay.bits.pp_external_prefetch
   mshrs.io.replay.ready    := metaReadArb.io.in(0).ready && dataReadArb.io.in(0).ready
   // Tag read for MSHR replays
   // We don't actually need to read the metadata, for replays we already know our way
@@ -520,6 +521,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   mshr_read_req(0).addr     := Cat(mshrs.io.meta_read.bits.tag, mshrs.io.meta_read.bits.idx) << blockOffBits
   mshr_read_req(0).data     := DontCare
   mshr_read_req(0).is_hella := false.B
+  mshr_read_req(0).pp_external_prefetch := false.B
   metaReadArb.io.in(3).valid       := mshrs.io.meta_read.valid
   metaReadArb.io.in(3).bits.req(0) := mshrs.io.meta_read.bits
   mshrs.io.meta_read.ready         := metaReadArb.io.in(3).ready
@@ -535,6 +537,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   wb_req(0).addr     := Cat(wb.io.meta_read.bits.tag, wb.io.data_req.bits.addr)
   wb_req(0).data     := DontCare
   wb_req(0).is_hella := false.B
+  wb_req(0).pp_external_prefetch := false.B
   // Couple the two decoupled interfaces of the WBUnit's meta_read and data_read
   // Tag read for write-back
   metaReadArb.io.in(2).valid        := wb.io.meta_read.valid
@@ -556,6 +559,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   prober_req(0).addr     := Cat(prober.io.meta_read.bits.tag, prober.io.meta_read.bits.idx) << blockOffBits
   prober_req(0).data     := DontCare
   prober_req(0).is_hella := false.B
+  prober_req(0).pp_external_prefetch := false.B
   // Tag read for prober
   metaReadArb.io.in(1).valid       := prober.io.meta_read.valid
   metaReadArb.io.in(1).bits.req(0) := prober.io.meta_read.bits
@@ -568,6 +572,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   val prefetch_req  = Wire(Vec(memWidth, new BoomDCacheReq))
   prefetch_req    := DontCare
   prefetch_req(0) := mshrs.io.prefetch.bits
+  prefetch_req(0).pp_external_prefetch := false.B
   // Tag read for prefetch
   metaReadArb.io.in(5).valid              := mshrs.io.prefetch.valid
   metaReadArb.io.in(5).bits.req(0).idx    := mshrs.io.prefetch.bits.addr >> blockOffBits
@@ -766,6 +771,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
 
     mshrs.io.req(w).bits.data        := s2_req(w).data
     mshrs.io.req(w).bits.is_hella    := s2_req(w).is_hella
+    mshrs.io.req(w).bits.pp_external_prefetch := s2_req(w).pp_external_prefetch
     mshrs.io.req_is_probe(w)         := s2_type === t_probe && s2_valid(w)
   }
 
@@ -776,7 +782,9 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   // PrefetchProf events. Per memory lane (one annotation for the whole group, annotated as a sequence), all sampled in
   // the s2 stage with physical addresses:
   //  - l1d_demand:  a core load/store/AMO accepted at s2 (not a prefetch, not nacked, cacheable)
-  //  - l1d_pf_fill: a prefetch that allocates a new MSHR for a line not in the cache, i.e. a block is brought in
+  //  - l1d_pf_fill: a native cache prefetch that allocates a new MSHR
+  //  - tap_l1d_pf_fill: an ordinary RoCC read marked by the LSU as a TAPrefetcher prefetch
+  //  - l1d_evict/l1d_evict_addr: replacement of a valid resident line, used to retire host-side TA tracking
   //  - l1d_demand_miss(_secondary): a demand access accepted into the MSHR file, and the subset that merged into an
   //    MSHR already fetching that line (block_hit)
   // A load that is later squashed by the core still accessed the cache, so it is counted. Any number of lanes can
@@ -786,30 +794,48 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   private def ppLanes(name: String)(f: Int => Bool): Seq[Bool] =
     Seq.tabulate(memWidth) { w => WireInit(f(w)).suggestName(s"pp_${name}_$w") }
   val pp_cmd       = (w: Int) => s2_req(w).uop.mem_cmd
+  val pp_tap      = (w: Int) => s2_req(w).pp_external_prefetch
+  val pp_native_pf = (w: Int) => isPrefetch(pp_cmd(w))
   val pp_cacheable = Seq.tabulate(memWidth)(w => edge.manager.supportsAcquireBFast(s2_req(w).addr, lgCacheBlockBytes.U))
   val pp_new_miss  = (w: Int) => mshrs.io.req(w).fire && !mshrs.io.block_hit(w) && !s2_tag_match(w) && pp_cacheable(w)
+  val pp_evict     = ppLanes("evict")(w => pp_new_miss(w) && s2_repl_meta(w).coh.isValid())
+  val pp_evict_addr = Seq.tabulate(memWidth) { w =>
+    WireInit(Cat(s2_repl_meta(w).tag, s2_req(w).addr(untagBits - 1, blockOffBits), 0.U(blockOffBits.W)))
+      .suggestName(s"pp_evict_addr_$w")
+  }
   val pp_demand      = ppLanes("demand")(w =>
     s2_valid(w) && s2_type === t_lsu && !s2_nack(w) && pp_cacheable(w) &&
-    (isRead(pp_cmd(w)) || isWrite(pp_cmd(w))) && !isPrefetch(pp_cmd(w)))
-  val pp_demand_miss = ppLanes("demand_miss")(w => mshrs.io.req(w).fire && !isPrefetch(pp_cmd(w)) && pp_cacheable(w))
+    (isRead(pp_cmd(w)) || isWrite(pp_cmd(w))) && !pp_native_pf(w) && !pp_tap(w))
+  val pp_demand_miss = ppLanes("demand_miss")(w => mshrs.io.req(w).fire && !pp_native_pf(w) && !pp_tap(w) && pp_cacheable(w))
   val pp_demand_sec  = ppLanes("demand_miss_secondary")(w => pp_demand_miss(w) && mshrs.io.block_hit(w))
-  val pp_pf_fill     = ppLanes("pf_fill")(w => pp_new_miss(w) && isPrefetch(pp_cmd(w)))
+  val pp_pf_fill     = ppLanes("pf_fill")(w => pp_new_miss(w) && pp_native_pf(w))
+  val pp_tap_fill   = ppLanes("ta_fill")(w => pp_new_miss(w) && pp_tap(w))
   val pp_req_addr    = Seq.tabulate(memWidth)(w => WireInit(s2_req(w).addr).suggestName(s"pp_req_addr_$w"))
   midas.targetutils.PrefetchProfVecTarget(pp_demand,      "l1d_demand",                "L1D demand accesses, per memory lane")
   midas.targetutils.PrefetchProfVecTarget(pp_demand,      "dmem_req_fire",             "Memory accesses (for the address histogram), per lane")
   midas.targetutils.PrefetchProfVecTarget(pp_req_addr,    "l1d_req_addr",              "L1D s2 request address, per lane")
   midas.targetutils.PrefetchProfVecTarget(pp_req_addr,    "dmem_addr",                 "Memory access address, per lane")
-  midas.targetutils.PrefetchProfVecTarget(pp_pf_fill,     "l1d_pf_fill",               "Prefetch miss that starts a line fill, per lane", p(PrefetchProfTagKey))
+  midas.targetutils.PrefetchProfVecTarget(pp_evict,       "l1d_evict",                 "Valid victim evicted on a new miss, per memory lane")
+  midas.targetutils.PrefetchProfVecTarget(pp_evict_addr,  "l1d_evict_addr",            "Address of the valid victim evicted on a new miss, per lane")
+  midas.targetutils.PrefetchProfVecTarget(pp_pf_fill,     "l1d_pf_fill",               "Native prefetch miss that starts a line fill, per lane", p(PrefetchProfTagKey))
+  midas.targetutils.PrefetchProfVecTarget(pp_tap_fill,   "tap_l1d_pf_fill",          "TAPrefetcher prefetch miss that starts a line fill, per lane", "tap")
   midas.targetutils.PrefetchProfVecTarget(pp_demand_miss, "l1d_demand_miss",           "Demand miss accepted into an MSHR, per lane")
   midas.targetutils.PrefetchProfVecTarget(pp_demand_sec,  "l1d_demand_miss_secondary", "Demand miss merged into an in-flight MSHR, per lane")
 
   // Prefetched-line lifetime, per MSHR (one annotation each for the whole group of MSHRs).
   private def ppMshr(name: String)(f: PrefetchProfMSHREvents => Bool): Seq[Bool] =
     Seq.tabulate(cfg.nMSHRs) { i => WireInit(f(mshrs.io.pp(i))).suggestName(s"pp_mshr_${name}_$i") }
-  midas.targetutils.PrefetchProfVecTarget(ppMshr("alloc")(_.alloc),   "pf_mshr_alloc",      "MSHR allocated by a prefetch (a line is being fetched)", p(PrefetchProfTagKey))
-  midas.targetutils.PrefetchProfVecTarget(ppMshr("timely")(_.timely), "pf_mshr_use_timely", "Demand claims a prefetched line that had arrived", p(PrefetchProfTagKey))
-  midas.targetutils.PrefetchProfVecTarget(ppMshr("late")(_.late),     "pf_mshr_use_late",   "Demand claims a prefetch still being fetched", p(PrefetchProfTagKey))
-  midas.targetutils.PrefetchProfVecTarget(ppMshr("drop")(_.drop),     "pf_mshr_drop",       "Prefetched line discarded before any demand", p(PrefetchProfTagKey))
+  midas.targetutils.PrefetchProfVecTarget(ppMshr("alloc")(_.alloc),   "pf_mshr_alloc",      "MSHR allocated by a native prefetch", p(PrefetchProfTagKey))
+  midas.targetutils.PrefetchProfVecTarget(ppMshr("timely")(_.timely), "pf_mshr_use_timely", "Demand claims a native prefetched line that had arrived", p(PrefetchProfTagKey))
+  midas.targetutils.PrefetchProfVecTarget(ppMshr("late")(_.late),     "pf_mshr_use_late",    "Demand claims a native prefetch still being fetched", p(PrefetchProfTagKey))
+  midas.targetutils.PrefetchProfVecTarget(ppMshr("drop")(_.drop),     "pf_mshr_drop",       "Native prefetched line discarded before demand", p(PrefetchProfTagKey))
+  midas.targetutils.PrefetchProfVecTarget(ppMshr("ta_alloc")(_.tapAlloc),   "tap_pf_mshr_alloc",      "MSHR allocated by TAPrefetcherPrefetcher", "tap")
+  midas.targetutils.PrefetchProfVecTarget(ppMshr("ta_arrive")(_.tapArrive), "tap_pf_mshr_arrive",    "TAPrefetcher MSHR refill data has arrived", "tap")
+  val pp_tap_mshr_addr = Seq.tabulate(cfg.nMSHRs) { i => WireInit(mshrs.io.pp_addr(i)).suggestName(s"pp_tap_mshr_addr_$i") }
+  midas.targetutils.PrefetchProfVecTarget(pp_tap_mshr_addr, "tap_pf_mshr_addr", "Address tracked by each BOOM MSHR", "tap")
+  midas.targetutils.PrefetchProfVecTarget(ppMshr("ta_timely")(_.tapTimely), "tap_pf_mshr_use_timely", "Demand merges after TAPrefetcher data arrives", "tap")
+  midas.targetutils.PrefetchProfVecTarget(ppMshr("ta_late")(_.tapLate),     "tap_pf_mshr_use_late",   "Demand claims an in-flight TAPrefetcher prefetch", "tap")
+  midas.targetutils.PrefetchProfVecTarget(ppMshr("ta_drop")(_.tapDrop),     "tap_pf_mshr_drop",       "TAPrefetcher prefetch discarded before demand", "tap")
   // Prefetch requests accepted into the cache pipeline (one prefetch port), whether or not they end up fetching a line.
   val pp_pf_issue      = WireInit(prefetch_fire)
   val pp_pf_issue_addr = WireInit(mshrs.io.prefetch.bits.addr)

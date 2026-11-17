@@ -197,6 +197,11 @@ class BoomTileModuleImp(outer: BoomTile) extends BaseTileModuleImp(outer){
         val dcIF = Module(new SimpleHellaCacheIF()(outer.p))
         dcIF.io.requestor <> rocc.module.io.mem
         hellaCachePorts += dcIF.io.cache
+        rocc.module match {
+          case m: HasLSUTrace =>
+            m.lsuTrace := core.io.lsuTrace
+          case _ =>
+        }
         respArb.io.in(i) <> Queue(rocc.module.io.resp)
       }
       // first keep fpu ios unconnected
