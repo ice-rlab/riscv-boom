@@ -36,7 +36,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.Instructions._
 import freechips.rocketchip.tile.{TraceBundle}
-import freechips.rocketchip.rocket.{Causes, PRV, TracedInstruction}
+import freechips.rocketchip.rocket.{Causes, PRV, TracedInstruction, IndirectCSRDecoder, SIndirectCSRRanges, IndirectCSRIO}
 import freechips.rocketchip.util.{Str, UIntIsOneOf, CoreMonitorBundle}
 import freechips.rocketchip.devices.tilelink.{PLICConsts, CLINTConsts}
 
@@ -44,6 +44,7 @@ import boom.v3.common._
 import boom.v3.ifu.{GlobalHistory, HasBoomFrontendParameters}
 import boom.v3.exu.FUConstants._
 import boom.v3.util._
+import boom.v3.perf.{CTR, MAR}
 
 /**
  * Top level core object that connects the Frontend to the rest of the pipeline.
@@ -150,6 +151,15 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
   require (exe_units.length == issue_units.map(_.issueWidth).sum)
 
+  // PrefetchProf: architecturally executed instructions retired this cycle (a count: up to retireWidth per cycle), and
+  // the PC of the youngest instruction retired most recently, as the core PC a prefetch is attributed to.
+  val pp_instr_ret = WireInit(PopCount(rob.io.commit.arch_valids))
+  val pp_commit_pc = RegEnable(
+    PriorityMux(rob.io.commit.arch_valids.reverse, rob.io.commit.uops.reverse.map(_.debug_pc)),
+    rob.io.commit.arch_valids.reduce(_ || _))
+  midas.targetutils.PrefetchProfTarget(pp_instr_ret, "instr_ret", "Instructions retired this cycle")
+  midas.targetutils.PrefetchProfTarget(pp_commit_pc, "core_pc", "PC of the last retired instruction")
+
   //***********************************
   // Pipeline State Registers and Wires
 
@@ -242,32 +252,17 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   }
 
   //-------------------------------------------------------------
+  // Pull out instructions and send to the Decoders
+  // Moved up here because dec_fbundle used in perfEvents
+
+  io.ifu.fetchpacket.ready := dec_ready
+  val dec_fbundle = io.ifu.fetchpacket.bits
+
+  //-------------------------------------------------------------
   // Uarch Hardware Performance Events (HPEs)
+  val boomPerfEvents = Module(new boom.v3.perf.BoomPerfHPMEvents)
+  val perfEvents = boomPerfEvents.perfEvents
 
-  val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
-    new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-      ("exception", () => rob.io.com_xcpt.valid),
-      ("nop",       () => false.B),
-      ("nop",       () => false.B),
-      ("nop",       () => false.B))),
-
-    new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-//      ("I$ blocked",                        () => icache_blocked),
-      ("nop",                               () => false.B),
-      ("branch misprediction",              () => b2.mispredict),
-      ("control-flow target misprediction", () => b2.mispredict &&
-                                                  b2.cfi_type === CFI_JALR),
-      ("flush",                             () => rob.io.flush.valid),
-      ("branch resolved",                   () => b2.valid)
-    )),
-
-    new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
-      ("I$ miss",     () => io.ifu.perf.acquire),
-      ("D$ miss",     () => io.lsu.perf.acquire),
-      ("D$ release",  () => io.lsu.perf.release),
-      ("ITLB miss",   () => io.ifu.perf.tlbMiss),
-      ("DTLB miss",   () => io.lsu.perf.tlbMiss),
-      ("L2 TLB miss", () => io.ptw.perf.l2miss)))))
   val csr = Module(new freechips.rocketchip.rocket.CSRFile(perfEvents, boomParams.customCSRs.decls))
   csr.io.inst foreach { c => c := DontCare }
   csr.io.rocc_interrupt := io.rocc.interrupt
@@ -281,6 +276,98 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   //val icache_blocked = !(io.ifu.fetchpacket.valid || RegNext(io.ifu.fetchpacket.valid))
   val icache_blocked = false.B
   csr.io.counters foreach { c => c.inc := RegNext(perfEvents.evaluate(c.eventSel)) }
+
+  val scsrind = csr.io.scsrind
+
+  if (usingCTR || usingMAR) {
+    require(scsrind.isDefined, "CTR/MAR require scsrind IO")
+
+    val scsrindFull = scsrind.get
+
+    // Default full response vector exactly once
+    for (r <- scsrindFull.resp) {
+      r.hit   := false.B
+      r.rdata := 0.U
+    }
+
+    if (usingCTR) {
+      require(csr.io.ctr.isDefined, "CTR requires ctr IO")
+
+      val ctr = Module(new CTR)
+      val csrCtr = csr.io.ctr.get
+
+      val ctrScsrind = Wire(new IndirectCSRIO(xLen, Seq(SIndirectCSRRanges.ctr)))
+
+      ctrScsrind.index := scsrindFull.index
+      ctrScsrind.reg   := scsrindFull.reg
+      ctrScsrind.wdata := scsrindFull.wdata
+      ctrScsrind.wen   := scsrindFull.wen
+
+      ctr.io.scsrind <> ctrScsrind
+
+      val ctrIdx = SIndirectCSRRanges.all(coreParams).indexWhere(_.name == "ctr")
+      require(ctrIdx >= 0)
+
+      scsrindFull.resp(ctrIdx).hit   := ctrScsrind.resp(0).hit
+      scsrindFull.resp(ctrIdx).rdata := ctrScsrind.resp(0).rdata
+
+      ctr.io.commit := rob.io.commit
+
+      ctr.io.mctrctl    := csrCtr.mctrctl
+      ctr.io.sctrstatus := csrCtr.sctrstatus
+      ctr.io.sctrdepth  := csrCtr.sctrdepth
+      ctr.io.sctrclr    := csrCtr.sctrclr
+      ctr.io.status     := csr.io.status
+
+      csrCtr.sctrstatus_next       := ctr.io.sctrstatus_next
+      csrCtr.sctrstatus_next_valid := ctr.io.sctrstatus_next_valid
+
+      ctr.io.interrupt       := csr.io.interrupt
+      ctr.io.interrupt_cause := csr.io.interrupt_cause
+    }
+
+    if (usingMAR) {
+      require(csr.io.mar.isDefined, "MAR requires mar IO")
+
+      val mar = Module(new MAR)
+      val csrMar = csr.io.mar.get
+
+      val marScsrind = Wire(new IndirectCSRIO(xLen, Seq(SIndirectCSRRanges.mar)))
+
+      marScsrind.index := scsrindFull.index
+      marScsrind.reg   := scsrindFull.reg
+      marScsrind.wdata := scsrindFull.wdata
+      marScsrind.wen   := scsrindFull.wen
+
+      mar.io.scsrind <> marScsrind
+
+      val marIdx = SIndirectCSRRanges.all(coreParams).indexWhere(_.name == "mar")
+      require(marIdx >= 0)
+
+      scsrindFull.resp(marIdx).hit   := marScsrind.resp(0).hit
+      scsrindFull.resp(marIdx).rdata := marScsrind.resp(0).rdata
+
+      mar.io.marctl     := csrMar.marctl
+      mar.io.smarstatus := csrMar.smarstatus
+      mar.io.smardepth  := csrMar.smardepth
+      mar.io.smaralb    := csrMar.smaralb
+      mar.io.smaraub    := csrMar.smaraub
+      mar.io.status     := csr.io.status
+
+      mar.io.lsu.records := io.lsu.mar.records
+      mar.io.time        := csr.io.time
+
+      csrMar.smarstatus_next       := mar.io.smarstatus_next
+      csrMar.smarstatus_next_valid := mar.io.smarstatus_next_valid
+
+      mar.io.interrupt       := csr.io.interrupt
+      mar.io.interrupt_cause := csr.io.interrupt_cause
+
+      mar.io.commit := rob.io.commit
+      mar.io.enq_valids := dis_fire
+      mar.io.enq_uops := dis_uops 
+    }
+  }
 
   //****************************************
   // Time Stamp Counter & Retired Instruction Counter
@@ -349,7 +436,8 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
         "Load/Store Unit Size  : " + numLdqEntries + "/" + numStqEntries,
         "Num Int Phys Registers: " + numIntPhysRegs,
         "Num FP  Phys Registers: " + numFpPhysRegs,
-        "Max Branch Count      : " + maxBrCount)
+        "Max Branch Count      : " + maxBrCount,
+        "Num PerfCounters      : " + nPerfCounters)
     + iregfile.toString + "\n"
     + BoomCoreStringPrefix(
         "Num Slow Wakeup Ports : " + numIrfWritePorts,
@@ -497,9 +585,10 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
   //-------------------------------------------------------------
   // Pull out instructions and send to the Decoders
+  // Moved up to performance event definitions
 
-  io.ifu.fetchpacket.ready := dec_ready
-  val dec_fbundle = io.ifu.fetchpacket.bits
+  //io.ifu.fetchpacket.ready := dec_ready
+  //val dec_fbundle = io.ifu.fetchpacket.bits
 
   //-------------------------------------------------------------
   // Decoders
@@ -1012,6 +1101,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
   // Extra I/O
   // Delay retire/exception 1 cycle
+  // PopCount sums the number of 1's
   csr.io.retire    := RegNext(PopCount(rob.io.commit.arch_valids.asUInt))
   csr.io.exception := RegNext(rob.io.com_xcpt.valid)
   // csr.io.pc used for setting EPC during exception or CSR.io.trace.
@@ -1312,6 +1402,36 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
   assert (!(rob.io.com_xcpt.valid && !rob.io.flush.valid),
     "[core] exception occurred, but pipeline flush signal not set!")
+
+
+  //-------------------------------------------------------------
+  // **** Hook up HPM Perf events ****
+  //-------------------------------------------------------------
+
+  boomPerfEvents.io.branch_mispredict := b2.mispredict
+  boomPerfEvents.io.cfi_target_mispredict := b2.mispredict && b2.cfi_type === CFI_JALR
+  boomPerfEvents.io.branch_resolved := b2.valid
+
+  boomPerfEvents.io.rob_flush := rob.io.flush.valid
+  boomPerfEvents.io.commit_uops := rob.io.commit.valids
+  boomPerfEvents.io.sfence_valid := io.ifu.sfence.valid
+  boomPerfEvents.io.redirect_val := io.ifu.redirect_val
+  boomPerfEvents.io.redirect_flush := io.ifu.redirect_flush
+  boomPerfEvents.io.rob_flush := rob.io.flush.valid
+  boomPerfEvents.io.ifu_acquire := io.ifu.perf.acquire
+  boomPerfEvents.io.lsu_acquire := io.lsu.perf.acquire
+  boomPerfEvents.io.lsu_release := io.lsu.perf.release
+  boomPerfEvents.io.ifu_tlb_miss := io.ifu.perf.tlbMiss
+  boomPerfEvents.io.lsu_tlb_miss := io.lsu.perf.tlbMiss
+  boomPerfEvents.io.ptw_l2_miss := io.ptw.perf.l2miss
+
+  boomPerfEvents.io.commit := rob.io.commit
+
+  boomPerfEvents.io.dec_valids := dec_valids
+  boomPerfEvents.io.fetchpacket_valid := io.ifu.fetchpacket.valid
+  boomPerfEvents.io.dec_fbundle_valids := VecInit(dec_fbundle.uops.map(_.valid))
+  boomPerfEvents.io.dec_stalls := dec_stalls
+  boomPerfEvents.io.dec_fire := dec_fire
 
   //-------------------------------------------------------------
   //-------------------------------------------------------------

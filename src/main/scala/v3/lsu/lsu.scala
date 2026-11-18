@@ -51,6 +51,7 @@ import freechips.rocketchip.util.Str
 
 import boom.v3.common._
 import boom.v3.exu.{BrUpdateInfo, Exception, FuncUnitResp, CommitSignals, ExeUnitResp}
+import boom.v3.perf.{MARRecord, MARLSUIO}
 import boom.v3.util.{BoolToChar, AgePriorityEncoder, IsKilledByBranch, GetNewBrMask, WrapInc, IsOlder, UpdateBrMask}
 
 class LSUExeIO(implicit p: Parameters) extends BoomBundle()(p)
@@ -102,8 +103,8 @@ class LSUDMemIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
   val perf = Input(new Bundle {
     val acquire = Bool()
     val release = Bool()
+    val outstanding = Bool()
   })
-
 }
 
 class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
@@ -152,7 +153,10 @@ class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
     val acquire = Bool()
     val release = Bool()
     val tlbMiss = Bool()
+    val outstanding = Bool()
   })
+
+  val mar = new MARLSUIO()
 }
 
 class LSUIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
@@ -168,6 +172,7 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
     with HasBoomUOP
 {
   val addr                = Valid(UInt(coreMaxAddrBits.W))
+  val vaddr               = UInt(coreMaxAddrBits.W)
   val addr_is_virtual     = Bool() // Virtual address, we got a TLB miss
   val addr_is_uncacheable = Bool() // Uncacheable, wait until head of ROB to execute
 
@@ -189,6 +194,7 @@ class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
    with HasBoomUOP
 {
   val addr                = Valid(UInt(coreMaxAddrBits.W))
+  val vaddr               = UInt(coreMaxAddrBits.W)
   val addr_is_virtual     = Bool() // Virtual address, we got a TLB miss
   val data                = Valid(UInt(xLen.W))
 
@@ -251,6 +257,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.core.perf.tlbMiss := io.ptw.req.fire
   io.core.perf.acquire := io.dmem.perf.acquire
   io.core.perf.release := io.dmem.perf.release
+  io.core.perf.outstanding := io.dmem.perf.outstanding
+    
+
+  // io.core.perf.outstanding := ldq.map(e => e.bits.executed && !e.bits.succeeded).reduce(_ || _)
 
 
 
@@ -261,7 +271,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
 
   def widthMap[T <: Data](f: Int => T) = VecInit((0 until memWidth).map(f))
-
 
   //-------------------------------------------------------------
   //-------------------------------------------------------------
@@ -748,6 +757,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.dmem.rob_pnr_idx    := io.core.rob_pnr_idx
 
   val dmem_req = Wire(Vec(memWidth, Valid(new BoomDCacheReq)))
+  val mar_vaddr = Wire(Vec(memWidth, UInt(coreMaxAddrBits.W)))
   io.dmem.req.valid := dmem_req.map(_.valid).reduce(_||_)
   io.dmem.req.bits  := dmem_req
   val dmem_req_fire = widthMap(w => dmem_req(w).valid && io.dmem.req.fire)
@@ -761,6 +771,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dmem_req(w).bits.addr  := 0.U
     dmem_req(w).bits.data  := 0.U
     dmem_req(w).bits.is_hella := false.B
+    mar_vaddr(w) := 0.U
 
     io.dmem.s1_kill(w) := false.B
 
@@ -768,6 +779,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).valid      := !exe_tlb_miss(w) && !exe_tlb_uncacheable(w)
       dmem_req(w).bits.addr  := exe_tlb_paddr(w)
       dmem_req(w).bits.uop   := exe_tlb_uop(w)
+      mar_vaddr(w) := exe_tlb_vaddr(w)
 
       s0_executing_loads(ldq_incoming_idx(w)) := dmem_req_fire(w)
       assert(!ldq_incoming_e(w).bits.executed)
@@ -775,6 +787,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).valid      := !exe_tlb_miss(w) && !exe_tlb_uncacheable(w)
       dmem_req(w).bits.addr  := exe_tlb_paddr(w)
       dmem_req(w).bits.uop   := exe_tlb_uop(w)
+      mar_vaddr(w) := exe_tlb_vaddr(w)
 
       s0_executing_loads(ldq_retry_idx) := dmem_req_fire(w)
       assert(!ldq_retry_e.bits.executed)
@@ -786,6 +799,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                     stq_commit_e.bits.data.bits,
                                     coreDataBytes)).data
       dmem_req(w).bits.uop      := stq_commit_e.bits.uop
+      mar_vaddr(w) := stq_commit_e.bits.vaddr
 
       stq_execute_head                     := Mux(dmem_req_fire(w),
                                                 WrapInc(stq_execute_head, numStqEntries),
@@ -796,6 +810,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).valid      := true.B
       dmem_req(w).bits.addr  := ldq_wakeup_e.bits.addr.bits
       dmem_req(w).bits.uop   := ldq_wakeup_e.bits.uop
+      mar_vaddr(w) := ldq_wakeup_e.bits.vaddr
 
       s0_executing_loads(ldq_wakeup_idx) := dmem_req_fire(w)
 
@@ -813,6 +828,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).bits.uop.mem_size   := hella_req.size
       dmem_req(w).bits.uop.mem_signed := hella_req.signed
       dmem_req(w).bits.is_hella       := true.B
+      mar_vaddr(w) := hella_req.addr
 
       hella_paddr := exe_tlb_paddr(w)
     }
@@ -829,7 +845,34 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).bits.uop.mem_size   := hella_req.size
       dmem_req(w).bits.uop.mem_signed := hella_req.signed
       dmem_req(w).bits.is_hella       := true.B
+      mar_vaddr(w) := hella_req.addr
     }
+
+    //-------------------------------------------------------------
+    // MAR: record at LSU/DCache fire time
+      io.core.mar.records(w).valid := false.B
+      io.core.mar.records(w).bits  := 0.U.asTypeOf(new MARRecord)
+
+      when (dmem_req_fire(w)) {
+        io.core.mar.records(w).valid := true.B
+
+        io.core.mar.records(w).bits.pc     := dmem_req(w).bits.uop.debug_pc
+        io.core.mar.records(w).bits.addr   := mar_vaddr(w).asSInt.pad(xLen).asUInt
+        io.core.mar.records(w).bits.time   := io.core.tsc_reg
+        io.core.mar.records(w).bits.prv    := io.ptw.status.prv
+        io.core.mar.records(w).bits.rob_idx := dmem_req(w).bits.uop.rob_idx
+
+        io.core.mar.records(w).bits.isLoad  := dmem_req(w).bits.uop.uses_ldq
+        io.core.mar.records(w).bits.isStore :=
+          dmem_req(w).bits.uop.uses_stq || dmem_req(w).bits.uop.is_amo
+
+        io.core.mar.records(w).bits.tpe := Cat(
+          dmem_req(w).bits.is_hella,
+          dmem_req(w).bits.uop.is_amo,
+          dmem_req(w).bits.uop.uses_stq || dmem_req(w).bits.uop.is_amo,
+          dmem_req(w).bits.uop.uses_ldq
+        )
+      }
 
     //-------------------------------------------------------------
     // Write Addr into the LAQ/SAQ
@@ -838,6 +881,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       val ldq_idx = Mux(will_fire_load_incoming(w), ldq_incoming_idx(w), ldq_retry_idx)
       ldq(ldq_idx).bits.addr.valid          := true.B
       ldq(ldq_idx).bits.addr.bits           := Mux(exe_tlb_miss(w), exe_tlb_vaddr(w), exe_tlb_paddr(w))
+      ldq(ldq_idx).bits.vaddr               := exe_tlb_vaddr(w)
       ldq(ldq_idx).bits.uop.pdst            := exe_tlb_uop(w).pdst
       ldq(ldq_idx).bits.addr_is_virtual     := exe_tlb_miss(w)
       ldq(ldq_idx).bits.addr_is_uncacheable := exe_tlb_uncacheable(w) && !exe_tlb_miss(w)
@@ -853,6 +897,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
       stq(stq_idx).bits.addr.valid := !pf_st(w) // Prevent AMOs from executing!
       stq(stq_idx).bits.addr.bits  := Mux(exe_tlb_miss(w), exe_tlb_vaddr(w), exe_tlb_paddr(w))
+      stq(stq_idx).bits.vaddr      := exe_tlb_vaddr(w)
       stq(stq_idx).bits.uop.pdst   := exe_tlb_uop(w).pdst // Needed for AMOs
       stq(stq_idx).bits.addr_is_virtual := exe_tlb_miss(w)
 
@@ -1390,6 +1435,78 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   when (spec_ld_succeed) {
     io.core.ld_miss := false.B
   }
+
+  //-------------------------------------------------------------
+  // MARQ --> impl 2 records at memory response
+  
+  // for (w <- 0 until memWidth) {
+  // when (io.dmem.resp(w).valid) {
+  //   when (io.dmem.resp(w).bits.uop.uses_ldq) {
+  //     val ldq_idx = io.dmem.resp(w).bits.uop.ldq_idx
+
+  //     io.core.mar.records(w).valid := true.B
+  //     io.core.mar.records(w).bits.pc   := io.dmem.resp(w).bits.uop.debug_pc
+  //     io.core.mar.records(w).bits.addr := ldq(ldq_idx).bits.addr.bits
+  //     io.core.mar.records(w).bits.time := io.core.tsc_reg
+  //     io.core.mar.records(w).bits.prv  := io.ptw.status.prv
+
+  //     io.core.mar.records(w).bits.isLoad  := true.B
+  //     io.core.mar.records(w).bits.isStore := false.B
+
+  //     io.core.mar.records(w).bits.tpe := Cat(
+  //       io.dmem.resp(w).bits.is_hella,
+  //       false.B, // isAMO
+  //       false.B, // isStore
+  //       true.B   // isLoad
+  //     )
+  //   } .elsewhen (io.dmem.resp(w).bits.uop.uses_stq) {
+  //     val stq_idx = io.dmem.resp(w).bits.uop.stq_idx
+
+  //     io.core.mar.records(w).valid := true.B
+  //     io.core.mar.records(w).bits.pc   := io.dmem.resp(w).bits.uop.debug_pc
+  //     io.core.mar.records(w).bits.addr := stq(stq_idx).bits.addr.bits
+  //     io.core.mar.records(w).bits.time := io.core.tsc_reg
+  //     io.core.mar.records(w).bits.prv  := io.ptw.status.prv
+
+  //     io.core.mar.records(w).bits.isLoad  := false.B
+  //     io.core.mar.records(w).bits.isStore := true.B
+
+  //     io.core.mar.records(w).bits.tpe := Cat(
+  //       io.dmem.resp(w).bits.is_hella,
+  //       io.dmem.resp(w).bits.uop.is_amo,
+  //       true.B,  // isStore
+  //       false.B  // isLoad
+  //     )
+  //   }
+  // }
+
+  // Store-load forwarding writeback path
+  // when (!dmem_resp_fired(w) && wb_forward_valid(w)) {
+  //   val f_idx       = wb_forward_ldq_idx(w)
+  //   val forward_uop = ldq(f_idx).bits.uop
+  //   val stq_e       = stq(wb_forward_stq_idx(w))
+  //   val data_ready  = stq_e.bits.data.valid
+  //   val live        = !IsKilledByBranch(io.core.brupdate, forward_uop)
+
+  //   when (data_ready && live) {
+  //     io.core.mar.records(w).valid := true.B
+  //     io.core.mar.records(w).bits.pc   := forward_uop.debug_pc
+  //     io.core.mar.records(w).bits.addr := wb_forward_ld_addr(w)
+  //     io.core.mar.records(w).bits.time := io.core.tsc_reg
+  //     io.core.mar.records(w).bits.prv  := io.ptw.status.prv
+
+  //     io.core.mar.records(w).bits.isLoad  := true.B
+  //     io.core.mar.records(w).bits.isStore := false.B
+
+  //     io.core.mar.records(w).bits.tpe := Cat(
+  //       false.B, // isHella
+  //       false.B, // isAMO
+  //       false.B, // isStore
+  //       true.B   // isLoad
+  //     )
+  //   }
+  // }
+
 
 
   //-------------------------------------------------------------

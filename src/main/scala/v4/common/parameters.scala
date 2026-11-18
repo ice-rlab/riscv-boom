@@ -86,6 +86,14 @@ case class BoomCoreParams(
   numRasEntries: Int = 32,
   enableRasTopRepair: Boolean = true,
 
+  /* CTR */
+  useCTR : Boolean = false,
+  nCTREntries : Int = 0,
+
+  /* MAR */
+  useMAR : Boolean = false,
+  nMAREntries : Int = 0,
+
   /* more stuff */
   useCompressed: Boolean = true,
   useFetchMonitor: Boolean = true,
@@ -122,7 +130,10 @@ case class BoomCoreParams(
   enableMemtracePrintf: Boolean = false,
 
   /* enableConservativeSNI: speculative non-interference */
-  enableConservativeSNI: Boolean = false
+  enableConservativeSNI: Boolean = false,
+
+  /* tracing for TMA testing */
+  enableDetailedTrace: Boolean = false,
 
 // DOC include end: BOOM Parameters
 ) extends freechips.rocketchip.tile.CoreParams

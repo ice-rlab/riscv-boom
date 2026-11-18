@@ -28,6 +28,7 @@ import boom.v3.util.{BoomCoreStringPrefix}
 class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUParameters
 {
   val fpIssueParams = issueParams.find(_.iqType == IQT_FP.litValue).get
+  println(">>> FpPipeline constructor invoked, issueWidth: " + fpIssueParams.issueWidth)
   val dispatchWidth = fpIssueParams.dispatchWidth
   val numLlPorts = memWidth
   val numWakeupPorts = fpIssueParams.issueWidth + numLlPorts
@@ -53,15 +54,30 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
 
     val debug_tsc_reg    = Input(UInt(width=xLen.W))
     val debug_wb_wdata   = Output(Vec(numWakeupPorts, UInt((fLen+1).W)))
+
+    val perf = Output(new Bundle {
+      val iss_valids = Vec(fpIssueParams.issueWidth, Output(Bool()))
+      val issue_unit_empty = Output(Bool())
+      val has_slot_with_all_valid_operands = Output(Bool())
+      val wb_fires = Output(Vec(memWidth + 1, Bool()))
+    })
   })
+
+
+
 
   //**********************************
   // construct all of the modules
 
   val exe_units      = new boom.v3.exu.ExecutionUnits(fpu=true)
+  println(s"Total execution units: ${exe_units.length}")
+  exe_units.zipWithIndex.foreach { case (unit, idx) =>
+    println(s"EXE UNIT [$idx]: ${unit.toString()}")
+  }
   val issue_unit     = Module(new IssueUnitCollapsing(
                          issueParams.find(_.iqType == IQT_FP.litValue).get,
                          numWakeupPorts))
+  
   issue_unit.suggestName("fp_issue_unit")
   val fregfile       = Module(new RegisterFileSynthesizable(numFpPhysRegs,
                          exe_units.numFrfReadPorts,
@@ -81,6 +97,16 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
 
   require (exe_units.count(_.readsFrf) == issue_unit.issueWidth)
   require (exe_units.numFrfWritePorts + numLlPorts == numWakeupPorts)
+
+  //*************************************************************
+  // Hookup the issue unit perf
+  io.perf.issue_unit_empty := issue_unit.io.perf.event_empty
+  io.perf.has_slot_with_all_valid_operands := issue_unit.io.perf.has_slot_with_all_valid_operands
+  //io.perf.wb_fires := fregfile.io.write_ports.map(_.valid)
+  for (i <- 0 until memWidth + 1) {
+    io.perf.wb_fires(i) := false.B
+  }
+
 
   //*************************************************************
   // Issue window logic
@@ -257,6 +283,7 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
 
   exe_units.map(_.io.fcsr_rm := io.fcsr_rm)
   exe_units.map(_.io.status := io.status)
+  
 
   //-------------------------------------------------------------
   // **** Flush Pipeline ****
@@ -267,10 +294,17 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
     exe_units(w).io.req.bits.kill := io.flush_pipeline
   }
 
-  override def toString: String =
-    (BoomCoreStringPrefix("===FP Pipeline===") + "\n"
-    + fregfile.toString
-    + BoomCoreStringPrefix(
-      "Num Wakeup Ports      : " + numWakeupPorts,
-      "Num Bypass Ports      : " + exe_units.numTotalBypassPorts))
+  
+  io.perf.iss_valids := iss_valids
+override def toString: String =
+  BoomCoreStringPrefix("===FP Pipeline===") + "\n" +
+  fregfile.toString +
+  BoomCoreStringPrefix(
+    "Num Wakeup Ports      : " + numWakeupPorts,
+    "Num Bypass Ports      : " + exe_units.numTotalBypassPorts,
+    "Num Execution Units   : " + exe_units.length
+  ) +
+  exe_units.zipWithIndex.map { case (u, i) =>
+    BoomCoreStringPrefix(s"  [FP EXE UNIT $i] " + u.toString)
+  }.mkString
 }

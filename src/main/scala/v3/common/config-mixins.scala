@@ -51,6 +51,27 @@ class WithNBoomPerfCounters(n: Int) extends Config((site, here, up) => {
   }
 })
 
+class WithNBoomCTR(n: Int) extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams =>
+      tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+        useCTR = true,
+        nCTREntries = n
+      )))
+    case other => other
+  }
+})
+
+class WithNBoomMAR(n: Int) extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams =>
+      tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+        useMAR = true,
+        nMAREntries = n
+      )))
+    case other => other
+  }
+})
 
 class WithSynchronousBoomTiles extends Config((site, here, up) => {
   case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
@@ -75,6 +96,19 @@ class WithRationalBoomTiles extends Config((site, here, up) => {
     case tp: BoomTileAttachParams => tp.copy(crossingParams = tp.crossingParams.copy(
       crossingType = RationalCrossing()
     ))
+    case other => other
+  }
+})
+
+class HasNPerfCounters(n: Int = 29) extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(
+      tileParams = tp.tileParams.copy(
+        core = tp.tileParams.core.copy(
+          nPerfCounters = n
+        )
+      )
+    )
     case other => other
   }
 })
@@ -106,7 +140,7 @@ class WithNSmallBooms(n: Int = 1) extends Config(
               maxBrCount = 8,
               numFetchBufferEntries = 8,
               ftq = FtqParameters(nEntries=16),
-              nPerfCounters = 2,
+              nPerfCounters = 29,
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),
             dcache = Some(
@@ -152,7 +186,7 @@ class WithNMediumBooms(n: Int = 1) extends Config(
               maxBrCount = 12,
               numFetchBufferEntries = 16,
               ftq = FtqParameters(nEntries=32),
-              nPerfCounters = 6,
+              nPerfCounters = 29,
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),
             dcache = Some(
@@ -197,6 +231,7 @@ class WithNLargeBooms(n: Int = 1) extends Config(
               numStqEntries = 24,
               maxBrCount = 16,
               numFetchBufferEntries = 24,
+              nPerfCounters = 29,
               ftq = FtqParameters(nEntries=32),
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),
@@ -244,6 +279,7 @@ class WithNMegaBooms(n: Int = 1) extends Config(
               maxBrCount = 20,
               numFetchBufferEntries = 32,
               enablePrefetching = true,
+              nPerfCounters = 29,
               ftq = FtqParameters(nEntries=40),
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))
             ),
@@ -290,6 +326,7 @@ class WithNGigaBooms(n: Int = 1) extends Config(
               maxBrCount = 20,
               numFetchBufferEntries = 35,
               enablePrefetching = true,
+              nPerfCounters = 29,
               numDCacheBanks = 1,
               ftq = FtqParameters(nEntries=40),
               fpu = Some(freechips.rocketchip.tile.FPUParams(sfmaLatency=4, dfmaLatency=4, divSqrt=true))

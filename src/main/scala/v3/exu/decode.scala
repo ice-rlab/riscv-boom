@@ -450,8 +450,12 @@ object RoCCDecode extends DecodeConstants
 }
 
 
-
-
+object CTRDecode extends DecodeConstants
+{
+  val table: Array[(BitPat, List[BitPat])] = Array(
+    SCTRCLR -> List(Y, N, X, uopSCTRCLR, IQT_INT, FU_CSR, RT_X, RT_X, RT_X, N, IS_X, N, N, N, N, N, M_X, 0.U, N, N, N, Y, Y, CSR.N)
+  )
+}
 
 /**
  * IO bundle for the Decode unit
@@ -483,6 +487,7 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
   if (usingFPU) decode_table ++= FDecode.table
   if (usingFPU && usingFDivSqrt) decode_table ++= FDivSqrtDecode.table
   if (usingRoCC) decode_table ++= RoCCDecode.table
+  if (usingCTR) decode_table ++= CTRDecode.table
   decode_table ++= (if (xLen == 64) X64Decode.table else X32Decode.table)
 
   val inst = uop.inst
