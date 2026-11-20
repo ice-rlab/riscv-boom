@@ -204,6 +204,7 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
   io.wb_req.bits         := DontCare
   io.resp.valid          := false.B
   io.resp.bits           := DontCare
+  io.resp.bits.has_data  := false.B
   io.commit_val          := false.B
   io.commit_addr         := req.addr
   io.commit_coh          := coh_on_grant
@@ -314,6 +315,7 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
     io.resp.bits.uop  := rpq.io.deq.bits.uop
     io.resp.bits.data := loadgen.data
     io.resp.bits.is_hella := rpq.io.deq.bits.is_hella
+    io.resp.bits.has_data := true.B
     when (rpq.io.deq.fire) {
       commit_line   := true.B
     }
@@ -548,6 +550,7 @@ class BoomIOMSHR(id: Int)(implicit edge: TLEdgeOut, p: Parameters) extends BoomM
   io.resp.bits.is_hella := req.is_hella
   io.resp.bits.uop  := req.uop
   io.resp.bits.data := loadgen.data
+  io.resp.bits.has_data := true.B
 
   when (io.req.fire) {
     req   := io.req.bits

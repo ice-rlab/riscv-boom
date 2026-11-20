@@ -69,6 +69,7 @@ class BoomDCacheReq(implicit p: Parameters) extends BoomBundle()(p)
   val addr  = UInt(coreMaxAddrBits.W)
   val data  = Bits(coreDataBits.W)
   val is_hella = Bool() // Is this the hellacache req? If so this is not tracked in LDQ or STQ
+  val no_alloc = Bool() // Enables Cache peeks
   val pp_external_prefetch = Bool() // Hella request from the profiled external prefetch port
 }
 
@@ -77,6 +78,7 @@ class BoomDCacheResp(implicit p: Parameters) extends BoomBundle()(p)
 {
   val data = Bits(coreDataBits.W)
   val is_hella = Bool()
+  val has_data = Bool()
 }
 
 class LSUDMemIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
@@ -248,14 +250,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val hella_state           = RegInit(h_ready)
   val hella_req             = Reg(new rocket.HellaCacheReq)
   private val ppExternalPortEnabled = p(rocket.ExternalPrefetchPortKey).contains(tileParams.tileId)
-  // BoomTile prepends one PTW requestor before the RoCCs. The external port replaces TAPrefetcher's RoCC slot, so its
-  // arbiter ID remains the last/only RoCC ID and can mark the request through LSU without changing M_XRD.
-  private val ppHellaPortCount = p(freechips.rocketchip.tile.BuildRoCC).size + 1
+  // BoomTile prepends one PTW requestor before the RoCCs. The external port reuses the last RoCC slot, so its
+  // arbiter ID identifies it without consuming extra HellaCache tag bits.
+  private val ppHellaRoCCCount = p(freechips.rocketchip.tile.BuildRoCC).size
+  private val ppHellaPortCount = ppHellaRoCCCount + 1
   private val ppHellaPortIdBits = log2Up(ppHellaPortCount)
-  private val ppHellaTAPortId = p(freechips.rocketchip.tile.BuildRoCC).size // TA prefetcher is required to be the last/only RoCC
+  private val ppHellaTAPortId = ppHellaRoCCCount
   private val ppIsExternalPrefetch = if (ppExternalPortEnabled) {
-    require(p(freechips.rocketchip.tile.BuildRoCC).size == 1,
-      "The BOOM TA external prefetch path currently requires a single RoCC")
+    require(ppHellaRoCCCount > 0, "BOOM ExternalPrefetchPort requires the TAPrefetcher RoCC")
     hella_req.tag(ppHellaPortIdBits - 1, 0) === ppHellaTAPortId.U(ppHellaPortIdBits.W)
   } else false.B
   val hella_data            = Reg(new rocket.HellaCacheWriteData)
@@ -396,6 +398,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val will_fire_sfence         = Wire(Vec(memWidth, Bool()))
   val will_fire_hella_incoming = Wire(Vec(memWidth, Bool()))
   val will_fire_hella_wakeup   = Wire(Vec(memWidth, Bool()))
+  val will_fire_external_hella_incoming = Wire(Vec(memWidth, Bool()))
+  val will_fire_external_hella_wakeup   = Wire(Vec(memWidth, Bool()))
   val will_fire_release        = Wire(Vec(memWidth, Bool()))
   val will_fire_load_retry     = Wire(Vec(memWidth, Bool()))
   val will_fire_sta_retry      = Wire(Vec(memWidth, Bool()))
@@ -577,12 +581,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     will_fire_std_incoming  (w) := lsu_sched(can_fire_std_incoming  (w) , false, false, false, true)  //                 , ROB
     will_fire_sfence        (w) := lsu_sched(can_fire_sfence        (w) , true , false, false, true)  // TLB ,    ,      , ROB
     will_fire_release       (w) := lsu_sched(can_fire_release       (w) , false, false, true , false) //            LCAM
-    will_fire_hella_incoming(w) := lsu_sched(can_fire_hella_incoming(w) , true , true , false, false) // TLB , DC
-    will_fire_hella_wakeup  (w) := lsu_sched(can_fire_hella_wakeup  (w) , false, true , false, false) //     , DC
+    will_fire_hella_incoming(w) := lsu_sched(can_fire_hella_incoming(w) && !ppIsExternalPrefetch, true, true, false, false)
+    will_fire_hella_wakeup  (w) := lsu_sched(can_fire_hella_wakeup  (w) && !ppIsExternalPrefetch, false, true, false, false)
     will_fire_load_retry    (w) := lsu_sched(can_fire_load_retry    (w) , true , true , true , false) // TLB , DC , LCAM
     will_fire_sta_retry     (w) := lsu_sched(can_fire_sta_retry     (w) , true , false, true , true)  // TLB ,    , LCAM , ROB // TODO: This should be higher priority
     will_fire_load_wakeup   (w) := lsu_sched(can_fire_load_wakeup   (w) , false, true , true , false) //     , DC , LCAM1
     will_fire_store_commit  (w) := lsu_sched(can_fire_store_commit  (w) , false, true , false, false) //     , DC
+    // The external prefetch port is the lowest-priority LSU client: core requests and regular Hella traffic win first.
+    will_fire_external_hella_incoming(w) := lsu_sched(can_fire_hella_incoming(w) && ppIsExternalPrefetch, true, true, false, false)
+    will_fire_external_hella_wakeup(w) := lsu_sched(can_fire_hella_wakeup(w) && ppIsExternalPrefetch, false, true, false, false)
 
 
     assert(!(exe_req(w).valid && !(will_fire_load_incoming(w) || will_fire_stad_incoming(w) || will_fire_sta_incoming(w) || will_fire_std_incoming(w) || will_fire_sfence(w))))
@@ -600,6 +607,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     (!(will_fire_sfence.reduce(_||_) && !will_fire_sfence.reduce(_&&_)) &&
      !will_fire_hella_incoming.reduce(_&&_) &&
      !will_fire_hella_wakeup.reduce(_&&_)   &&
+     !will_fire_external_hella_incoming.reduce(_&&_) &&
+     !will_fire_external_hella_wakeup.reduce(_&&_)   &&
      !will_fire_load_retry.reduce(_&&_)     &&
      !will_fire_sta_retry.reduce(_&&_)      &&
      !will_fire_store_commit.reduce(_&&_)   &&
@@ -621,7 +630,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                         will_fire_sfence        (w)  , exe_req(w).bits.uop,
                     Mux(will_fire_load_retry    (w)  , ldq_retry_e.bits.uop,
                     Mux(will_fire_sta_retry     (w)  , stq_retry_e.bits.uop,
-                    Mux(will_fire_hella_incoming(w)  , NullMicroOp,
+                    Mux(will_fire_hella_incoming(w) || will_fire_external_hella_incoming(w), NullMicroOp,
                                                        NullMicroOp)))))
 
   val exe_tlb_vaddr = widthMap(w =>
@@ -631,7 +640,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                     Mux(will_fire_sfence        (w)  , exe_req(w).bits.sfence.bits.addr,
                     Mux(will_fire_load_retry    (w)  , ldq_retry_e.bits.addr.bits,
                     Mux(will_fire_sta_retry     (w)  , stq_retry_e.bits.addr.bits,
-                    Mux(will_fire_hella_incoming(w)  , hella_req.addr,
+                    Mux(will_fire_hella_incoming(w) || will_fire_external_hella_incoming(w), hella_req.addr,
                                                        0.U))))))
 
   val exe_sfence = WireInit((0.U).asTypeOf(Valid(new rocket.SFenceReq)))
@@ -648,7 +657,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                        will_fire_sfence        (w) ||
                        will_fire_load_retry    (w) ||
                        will_fire_sta_retry     (w)  , exe_tlb_uop(w).mem_size,
-                   Mux(will_fire_hella_incoming(w)  , hella_req.size,
+                   Mux(will_fire_hella_incoming(w) || will_fire_external_hella_incoming(w), hella_req.size,
                                                       0.U)))
   val exe_cmd    = widthMap(w =>
                    Mux(will_fire_load_incoming (w) ||
@@ -657,14 +666,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                        will_fire_sfence        (w) ||
                        will_fire_load_retry    (w) ||
                        will_fire_sta_retry     (w)  , exe_tlb_uop(w).mem_cmd,
-                   Mux(will_fire_hella_incoming(w)  , hella_req.cmd,
+                   Mux(will_fire_hella_incoming(w) || will_fire_external_hella_incoming(w), hella_req.cmd,
                                                       0.U)))
 
   val exe_passthr= widthMap(w =>
-                   Mux(will_fire_hella_incoming(w)  , hella_req.phys,
+                   Mux(will_fire_hella_incoming(w) || will_fire_external_hella_incoming(w), hella_req.phys,
                                                       false.B))
   val exe_kill   = widthMap(w =>
-                   Mux(will_fire_hella_incoming(w)  , io.hellacache.s1_kill,
+                   Mux(will_fire_hella_incoming(w) || will_fire_external_hella_incoming(w), io.hellacache.s1_kill,
                                                       false.B))
   for (w <- 0 until memWidth) {
     dtlb.io.req(w).valid            := exe_tlb_valid(w)
@@ -783,6 +792,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dmem_req(w).bits.addr  := 0.U
     dmem_req(w).bits.data  := 0.U
     dmem_req(w).bits.is_hella := false.B
+    dmem_req(w).bits.no_alloc := false.B
     dmem_req(w).bits.pp_external_prefetch := false.B
     mar_vaddr(w) := 0.U
 
@@ -828,7 +838,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       s0_executing_loads(ldq_wakeup_idx) := dmem_req_fire(w)
 
       assert(!ldq_wakeup_e.bits.executed && !ldq_wakeup_e.bits.addr_is_virtual)
-    } .elsewhen (will_fire_hella_incoming(w)) {
+    } .elsewhen (will_fire_hella_incoming(w) || will_fire_external_hella_incoming(w)) {
       assert(hella_state === h_s1)
 
       dmem_req(w).valid               := !io.hellacache.s1_kill && (!exe_tlb_miss(w) || hella_req.phys)
@@ -841,12 +851,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).bits.uop.mem_size   := hella_req.size
       dmem_req(w).bits.uop.mem_signed := hella_req.signed
       dmem_req(w).bits.is_hella       := true.B
+      dmem_req(w).bits.no_alloc       := hella_req.no_alloc
       dmem_req(w).bits.pp_external_prefetch := ppIsExternalPrefetch
       mar_vaddr(w) := hella_req.addr
 
       hella_paddr := exe_tlb_paddr(w)
     }
-      .elsewhen (will_fire_hella_wakeup(w))
+      .elsewhen (will_fire_hella_wakeup(w) || will_fire_external_hella_wakeup(w))
     {
       assert(hella_state === h_replay)
       dmem_req(w).valid               := true.B
@@ -859,6 +870,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).bits.uop.mem_size   := hella_req.size
       dmem_req(w).bits.uop.mem_signed := hella_req.signed
       dmem_req(w).bits.is_hella       := true.B
+      dmem_req(w).bits.no_alloc       := hella_req.no_alloc
       dmem_req(w).bits.pp_external_prefetch := ppIsExternalPrefetch
       mar_vaddr(w) := hella_req.addr
     }
@@ -1681,6 +1693,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.hellacache.s2_nack   := false.B
   io.hellacache.s2_xcpt   := (0.U).asTypeOf(new rocket.HellaCacheExceptions)
   io.hellacache.resp.valid := false.B
+  io.hellacache.resp.bits  := 0.U.asTypeOf(new rocket.HellaCacheResp)
   io.hellacache.store_pending := stq.map(_.valid).reduce(_||_)
   when (hella_state === h_ready) {
     io.hellacache.req.ready := true.B
@@ -1695,12 +1708,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     hella_xcpt := dtlb.io.resp(memWidth-1)
 
     when (io.hellacache.s1_kill) {
-      when (will_fire_hella_incoming(memWidth-1) && dmem_req_fire(memWidth-1)) {
+      when ((will_fire_hella_incoming(memWidth-1) || will_fire_external_hella_incoming(memWidth-1)) && dmem_req_fire(memWidth-1)) {
         hella_state := h_dead
       } .otherwise {
         hella_state := h_ready
       }
-    } .elsewhen (will_fire_hella_incoming(memWidth-1) && dmem_req_fire(memWidth-1)) {
+    } .elsewhen ((will_fire_hella_incoming(memWidth-1) || will_fire_external_hella_incoming(memWidth-1)) && dmem_req_fire(memWidth-1)) {
       hella_state := h_s2
     } .otherwise {
       hella_state := h_s2_nack
@@ -1726,6 +1739,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         io.hellacache.resp.bits.cmd    := hella_req.cmd
         io.hellacache.resp.bits.signed := hella_req.signed
         io.hellacache.resp.bits.size   := hella_req.size
+        io.hellacache.resp.bits.mask   := hella_req.mask
+        io.hellacache.resp.bits.dprv   := hella_req.dprv
+        io.hellacache.resp.bits.dv     := hella_req.dv
+        io.hellacache.resp.bits.replay := false.B
+        io.hellacache.resp.bits.has_data := io.dmem.resp(w).bits.has_data
+        io.hellacache.resp.bits.data_word_bypass := io.dmem.resp(w).bits.data
+        io.hellacache.resp.bits.data_raw := io.dmem.resp(w).bits.data
+        io.hellacache.resp.bits.store_data := hella_req.data
         io.hellacache.resp.bits.data   := io.dmem.resp(w).bits.data
       } .elsewhen (io.dmem.nack(w).valid && io.dmem.nack(w).bits.is_hella) {
         hella_state := h_replay
@@ -1734,7 +1755,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   } .elsewhen (hella_state === h_replay) {
     can_fire_hella_wakeup(memWidth-1) := true.B
 
-    when (will_fire_hella_wakeup(memWidth-1) && dmem_req_fire(memWidth-1)) {
+    when ((will_fire_hella_wakeup(memWidth-1) || will_fire_external_hella_wakeup(memWidth-1)) && dmem_req_fire(memWidth-1)) {
       hella_state := h_wait
     }
   } .elsewhen (hella_state === h_dead) {

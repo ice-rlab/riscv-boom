@@ -7,6 +7,7 @@ package boom.v3.common
 
 import chisel3._
 import chisel3.util.{RRArbiter, Queue}
+import chisel3.util.experimental.BoringUtils
 
 import scala.collection.mutable.{ListBuffer}
 
@@ -30,6 +31,8 @@ import boom.v3.perf._
 import boom.v3.util.{BoomCoreStringPrefix}
 import freechips.rocketchip.prci.ClockSinkParameters
 
+/** Marks the RoCC whose HellaCache slot BoomTile repurposes for the external prefetch port. */
+trait UsesExternalPrefetchPort
 
 case class BoomTileAttachParams(
   tileParams: BoomTileParams,
@@ -169,6 +172,11 @@ class BoomTileModuleImp(outer: BoomTile) extends BaseTileModuleImp(outer){
   val ptwPorts         = ListBuffer(lsu.io.ptw, outer.frontend.module.io.ptw, core.io.ptw_tlb)
 
   val hellaCachePorts  = ListBuffer[HellaCacheIO]()
+  private val externalPrefetchPortEnabled = outer.p(ExternalPrefetchPortKey).contains(outer.tileId)
+  private val hasExternalPrefetchPortRoCC = outer.roccs.lastOption.exists(
+    _.module.isInstanceOf[UsesExternalPrefetchPort])
+  require(!externalPrefetchPortEnabled || hasExternalPrefetchPortRoCC,
+    "BOOM ExternalPrefetchPort requires TAPrefetcher to be the last RoCC")
 
   outer.reportWFI(None) // TODO: actually report this?
 
@@ -196,6 +204,32 @@ class BoomTileModuleImp(outer: BoomTile) extends BaseTileModuleImp(outer){
         rocc.module.io.cmd <> cmdRouter.io.out(i)
         val dcIF = Module(new SimpleHellaCacheIF()(outer.p))
         dcIF.io.requestor <> rocc.module.io.mem
+        if (externalPrefetchPortEnabled && i == outer.roccs.size - 1) {
+          // Reuse the last RoCC slot: the LSU still performs translation and this does not widen HellaCache tags.
+          val name = (signal: String) => s"extpf_tile${outer.tileId}_$signal"
+          val sideReqValid = Wire(Bool())
+          val sideReqBitsRaw = Wire(UInt(new HellaCacheReq()(outer.p).getWidth.W))
+          val sideReqReady = Wire(Bool())
+          val sideRespValid = Wire(Bool())
+          val sideRespBitsRaw = Wire(UInt(new HellaCacheResp()(outer.p).getWidth.W))
+          BoringUtils.addSink(sideReqValid, name("req_valid"))
+          BoringUtils.addSink(sideReqBitsRaw, name("req_bits"))
+          BoringUtils.addSource(sideReqReady, name("req_ready"))
+          BoringUtils.addSource(sideRespValid, name("resp_valid"))
+          BoringUtils.addSource(sideRespBitsRaw, name("resp_bits"))
+
+          val sideReq = Wire(new HellaCacheReq()(outer.p))
+          sideReq := sideReqBitsRaw.asTypeOf(new HellaCacheReq()(outer.p))
+          sideReq.no_resp := false.B
+          val sideInFlight = RegInit(false.B)
+          sideReqReady := !sideInFlight && dcIF.io.requestor.req.ready
+          dcIF.io.requestor.req.valid := sideReqValid && !sideInFlight
+          dcIF.io.requestor.req.bits := sideReq
+          when (sideReqValid && sideReqReady) { sideInFlight := true.B }
+          when (dcIF.io.requestor.resp.valid) { sideInFlight := false.B }
+          sideRespValid := dcIF.io.requestor.resp.valid
+          sideRespBitsRaw := dcIF.io.requestor.resp.bits.asUInt
+        }
         hellaCachePorts += dcIF.io.cache
         rocc.module match {
           case m: HasLSUTrace =>

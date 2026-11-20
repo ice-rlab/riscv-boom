@@ -499,6 +499,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   replay_req(0).addr       := mshrs.io.replay.bits.addr
   replay_req(0).data       := mshrs.io.replay.bits.data
   replay_req(0).is_hella   := mshrs.io.replay.bits.is_hella
+  replay_req(0).no_alloc   := mshrs.io.replay.bits.no_alloc
   replay_req(0).pp_external_prefetch := mshrs.io.replay.bits.pp_external_prefetch
   mshrs.io.replay.ready    := metaReadArb.io.in(0).ready && dataReadArb.io.in(0).ready
   // Tag read for MSHR replays
@@ -521,6 +522,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   mshr_read_req(0).addr     := Cat(mshrs.io.meta_read.bits.tag, mshrs.io.meta_read.bits.idx) << blockOffBits
   mshr_read_req(0).data     := DontCare
   mshr_read_req(0).is_hella := false.B
+  mshr_read_req(0).no_alloc := false.B
   mshr_read_req(0).pp_external_prefetch := false.B
   metaReadArb.io.in(3).valid       := mshrs.io.meta_read.valid
   metaReadArb.io.in(3).bits.req(0) := mshrs.io.meta_read.bits
@@ -537,6 +539,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   wb_req(0).addr     := Cat(wb.io.meta_read.bits.tag, wb.io.data_req.bits.addr)
   wb_req(0).data     := DontCare
   wb_req(0).is_hella := false.B
+  wb_req(0).no_alloc := false.B
   wb_req(0).pp_external_prefetch := false.B
   // Couple the two decoupled interfaces of the WBUnit's meta_read and data_read
   // Tag read for write-back
@@ -559,6 +562,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   prober_req(0).addr     := Cat(prober.io.meta_read.bits.tag, prober.io.meta_read.bits.idx) << blockOffBits
   prober_req(0).data     := DontCare
   prober_req(0).is_hella := false.B
+  prober_req(0).no_alloc := false.B
   prober_req(0).pp_external_prefetch := false.B
   // Tag read for prober
   metaReadArb.io.in(1).valid       := prober.io.meta_read.valid
@@ -572,6 +576,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   val prefetch_req  = Wire(Vec(memWidth, new BoomDCacheReq))
   prefetch_req    := DontCare
   prefetch_req(0) := mshrs.io.prefetch.bits
+  prefetch_req(0).no_alloc := false.B
   prefetch_req(0).pp_external_prefetch := false.B
   // Tag read for prefetch
   metaReadArb.io.in(5).valid              := mshrs.io.prefetch.valid
@@ -652,6 +657,8 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   val s2_new_hit_state  = widthMap(w => s2_hit_state(w).onAccess(s2_req(w).uop.mem_cmd)._3)
 
   val s2_hit = widthMap(w => (s2_tag_match(w) && s2_has_permission(w) && s2_hit_state(w) === s2_new_hit_state(w) && !mshrs.io.block_hit(w)) || s2_type.isOneOf(t_replay, t_wb))
+  // A no_alloc Hella read is a cache-resident-only peek: respond on hit/miss without an MSHR or lower-level access.
+  val s2_peek = widthMap(w => s2_type === t_lsu && s2_req(w).no_alloc && isRead(s2_req(w).uop.mem_cmd))
   val s2_nack = Wire(Vec(memWidth, Bool()))
   assert(!(s2_type === t_replay && !s2_hit(0)), "Replays should always hit")
   assert(!(s2_type === t_wb && !s2_hit(0)), "Writeback should always see data hit")
@@ -728,15 +735,15 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   // Nack when we hit something currently being evicted
   val s2_nack_victim = widthMap(w => s2_valid(w) &&  s2_hit(w) && mshrs.io.secondary_miss(w))
   // MSHRs not ready for request
-  val s2_nack_miss   = widthMap(w => s2_valid(w) && !s2_hit(w) && !mshrs.io.req(w).ready)
+  val s2_nack_miss   = widthMap(w => s2_valid(w) && !s2_hit(w) && !s2_peek(w) && !mshrs.io.req(w).ready)
   // Bank conflict on data arrays
   val s2_nack_data   = widthMap(w => data.io.nacks(w))
   // Can't allocate MSHR for same set currently being written back
-  val s2_nack_wb     = widthMap(w => s2_valid(w) && !s2_hit(w) && s2_wb_idx_matches(w))
+  val s2_nack_wb     = widthMap(w => s2_valid(w) && !s2_peek(w) && !s2_hit(w) && s2_wb_idx_matches(w))
 
   s2_nack           := widthMap(w => (s2_nack_miss(w) || s2_nack_hit(w) || s2_nack_victim(w) || s2_nack_data(w) || s2_nack_wb(w)) && s2_type =/= t_replay)
   val s2_send_resp = widthMap(w => (RegNext(s1_send_resp_or_nack(w)) && !s2_nack(w) &&
-                      (s2_hit(w) || (mshrs.io.req(w).fire && isWrite(s2_req(w).uop.mem_cmd) && !isRead(s2_req(w).uop.mem_cmd)))))
+                      (s2_hit(w) || s2_peek(w) || (mshrs.io.req(w).fire && isWrite(s2_req(w).uop.mem_cmd) && !isRead(s2_req(w).uop.mem_cmd)))))
   val s2_send_nack = widthMap(w => (RegNext(s1_send_resp_or_nack(w)) && s2_nack(w)))
   for (w <- 0 until memWidth)
     assert(!(s2_send_resp(w) && s2_send_nack(w)))
@@ -750,6 +757,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
   for (w <- 0 until memWidth) {
     mshrs.io.req(w).valid := s2_valid(w)          &&
                             !s2_hit(w)            &&
+                            !s2_peek(w)           &&
                             !s2_nack_hit(w)       &&
                             !s2_nack_victim(w)    &&
                             !s2_nack_data(w)      &&
@@ -771,6 +779,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
 
     mshrs.io.req(w).bits.data        := s2_req(w).data
     mshrs.io.req(w).bits.is_hella    := s2_req(w).is_hella
+    mshrs.io.req(w).bits.no_alloc    := s2_req(w).no_alloc
     mshrs.io.req(w).bits.pp_external_prefetch := s2_req(w).pp_external_prefetch
     mshrs.io.req_is_probe(w)         := s2_type === t_probe && s2_valid(w)
   }
@@ -934,10 +943,12 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
     cache_resp(w).bits.uop      := s2_req(w).uop
     cache_resp(w).bits.data     := loadgen(w).data | s2_sc_fail
     cache_resp(w).bits.is_hella := s2_req(w).is_hella
+    cache_resp(w).bits.has_data := isRead(s2_req(w).uop.mem_cmd) && !(s2_peek(w) && !s2_hit(w))
   }
 
   val uncache_resp = Wire(Valid(new BoomDCacheResp))
   uncache_resp.bits     := mshrs.io.resp.bits
+  uncache_resp.bits.has_data := true.B
   uncache_resp.valid    := mshrs.io.resp.valid
   mshrs.io.resp.ready := !(cache_resp.map(_.valid).reduce(_&&_)) // We can backpressure the MSHRs, but not cache hits
 
